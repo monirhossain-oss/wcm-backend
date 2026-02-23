@@ -7,6 +7,7 @@ import {
   deleteListing,
   getPublicListings,
   toggleFavorite,
+  getCategoriesAndTags,
 } from '../controllers/listingController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 
@@ -17,6 +18,7 @@ router.get('/public', getPublicListings);
 router.use(authMiddleware);
 
 router.post('/favorite/:id', toggleFavorite);
+router.get('/meta-data', getCategoriesAndTags);
 
 router.use(authorizeRoles('creator'));
 

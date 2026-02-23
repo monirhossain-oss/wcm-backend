@@ -33,9 +33,15 @@ const listingSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    category: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Category',
+      required: true,
+    },
     culturalTags: [
       {
-        type: String,
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Tag',
       },
     ],
     status: {

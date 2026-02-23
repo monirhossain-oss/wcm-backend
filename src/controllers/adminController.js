@@ -1,5 +1,144 @@
 import User from '../models/User.js';
 import Listing from '../models/Listing.js';
+import Category from '../models/Category.js';
+import Tag from '../models/Tag.js';
+import path from 'path';
+import fs from 'fs';
+
+export const createTag = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'Please upload an image for the tag' });
+    }
+
+    const { title } = req.body;
+    if (!title) {
+      return res.status(400).json({ message: 'Title is required' });
+    }
+
+    const imageUrl = `/uploads/tags/${req.file.filename}`;
+
+    const tag = await Tag.create({
+      title,
+      image: imageUrl,
+    });
+
+    res.status(201).json(tag);
+  } catch (error) {
+    if (error.code === 11000) {
+      if (req.file) {
+        const uploadedPath = path.join(process.cwd(), 'uploads/tags', req.file.filename);
+        if (fs.existsSync(uploadedPath)) fs.unlinkSync(uploadedPath);
+      }
+      return res.status(400).json({ message: 'This tag title already exists' });
+    }
+
+    console.error('Tag Create Error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const createCategory = async (req, res) => {
+  try {
+    const category = await Category.create({ title: req.body.title });
+    res.status(201).json(category);
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ message: 'Category already exists' });
+    }
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const updateCategory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title } = req.body;
+    const updatedCategory = await Category.findByIdAndUpdate(
+      id,
+      { title },
+      { new: true, runValidators: true }
+    );
+    if (!updatedCategory) return res.status(404).json({ message: 'Category not found' });
+    res.status(200).json(updatedCategory);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const deleteCategory = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const category = await Category.findByIdAndDelete(id);
+    if (!category) return res.status(404).json({ message: 'Category not found' });
+    res.status(200).json({ message: 'Category deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const updateTag = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tag = await Tag.findById(id);
+    if (!tag) return res.status(404).json({ message: 'Tag not found' });
+
+    let updateData = { title: req.body.title };
+
+    if (req.file) {
+      const relativePath = tag.image.startsWith('/') ? tag.image.slice(1) : tag.image;
+      const oldPath = path.join(process.cwd(), relativePath);
+
+      if (fs.existsSync(oldPath)) {
+        try {
+          fs.unlinkSync(oldPath);
+        } catch (err) {
+          console.error('File deletion error:', err.message);
+        }
+      }
+      updateData.image = `/uploads/tags/${req.file.filename}`;
+    }
+
+    const updatedTag = await Tag.findByIdAndUpdate(
+      id,
+      { $set: updateData },
+      { new: true, runValidators: true }
+    );
+
+    res.status(200).json(updatedTag);
+  } catch (error) {
+    console.error('Update Error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const deleteTag = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tag = await Tag.findById(id);
+
+    if (!tag) return res.status(404).json({ message: 'Tag not found' });
+
+    if (tag.image) {
+      const relativePath = tag.image.startsWith('/') ? tag.image.slice(1) : tag.image;
+      const imagePath = path.join(process.cwd(), relativePath);
+
+      if (fs.existsSync(imagePath)) {
+        try {
+          fs.unlinkSync(imagePath);
+        } catch (err) {
+          console.error('File deletion error:', err.message);
+        }
+      }
+    }
+
+    await Tag.findByIdAndDelete(id);
+    res.status(200).json({ message: 'Tag and image deleted successfully' });
+  } catch (error) {
+    console.error('Delete operation failed:', error);
+    res.status(500).json({ message: 'Server error during deletion' });
+  }
+};
 
 export const getAllUsers = async (req, res) => {
   try {
