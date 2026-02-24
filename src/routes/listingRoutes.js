@@ -9,11 +9,11 @@ import {
   toggleFavorite,
   getCategoriesAndTags,
 } from '../controllers/listingController.js';
-import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
+import { authMiddleware, authorizeRoles, optionalAuth } from '../middlewares/auth.js';
 
 const router = express.Router();
 
-router.get('/public', getPublicListings);
+router.get('/public', optionalAuth, getPublicListings);
 
 router.use(authMiddleware);
 

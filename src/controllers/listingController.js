@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import Category from '../models/Category.js';
 import Tag from '../models/Tag.js';
+import mongoose from 'mongoose';
 
 export const getCategoriesAndTags = async (req, res) => {
   try {
@@ -27,18 +28,16 @@ export const createListing = async (req, res) => {
 
     let tagIds = [];
     if (culturalTags) {
-      if (Array.isArray(culturalTags)) {
-        tagIds = culturalTags;
-      } else if (typeof culturalTags === 'string') {
-        tagIds = culturalTags
-          .split(',')
-          .map((id) => id.trim())
-          .filter((id) => id !== '');
-      }
+      tagIds = Array.isArray(culturalTags)
+        ? culturalTags
+        : culturalTags
+            .split(',')
+            .map((t) => t.trim())
+            .filter((t) => t !== '');
     }
 
     const newListing = await Listing.create({
-      creatorId: req.user._id || req.user.id,
+      creatorId: req.user._id,
       title,
       description,
       externalUrl,
@@ -50,20 +49,12 @@ export const createListing = async (req, res) => {
       image: imageUrl,
     });
 
-    res.status(201).json({
-      message: 'Listing created successfully',
-      newListing,
-    });
+    res.status(201).json({ message: 'Listing created successfully', newListing });
   } catch (error) {
-    console.error('Create Listing Error:', error);
-
     if (req.file) {
-      const fs = await import('fs');
-      const path = await import('path');
       const uploadedPath = path.join(process.cwd(), 'uploads/listings', req.file.filename);
       if (fs.existsSync(uploadedPath)) fs.unlinkSync(uploadedPath);
     }
-
     res.status(500).json({ message: error.message });
   }
 };
@@ -81,8 +72,13 @@ export const updateListing = async (req, res) => {
 
     let updateData = { ...req.body };
 
-    if (updateData.culturalTags && typeof updateData.culturalTags === 'string') {
-      updateData.culturalTags = updateData.culturalTags.split(',');
+    if (updateData.culturalTags) {
+      updateData.culturalTags = Array.isArray(updateData.culturalTags)
+        ? updateData.culturalTags
+        : updateData.culturalTags
+            .split(',')
+            .map((t) => t.trim())
+            .filter((t) => t !== '');
     }
 
     if (req.file) {
@@ -116,33 +112,74 @@ export const getPublicListings = async (req, res) => {
 
     const now = new Date();
     if (filter === 'Today') {
-      const startOfDay = new Date(now.setHours(0, 0, 0, 0));
+      const startOfDay = new Date(now);
+      startOfDay.setHours(0, 0, 0, 0);
       query.createdAt = { $gte: startOfDay };
     } else if (filter === 'This week') {
-      const startOfWeek = new Date(now.setDate(now.getDate() - 7));
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - 7);
       query.createdAt = { $gte: startOfWeek };
     }
 
-    const listings = await Listing.find(query)
+    let listings = await Listing.find(query)
       .populate('creatorId', 'username')
       .populate('category', 'title')
-      .populate('culturalTags', 'title image')
-      .sort({ createdAt: -1 });
+      .populate({
+        path: 'culturalTags',
+        select: 'title image',
+      })
+      .sort({ createdAt: -1 })
+      .lean();
 
-    res.status(200).json(listings);
+    const currentUserId = req.user ? req.user._id.toString() : null;
+
+    const formattedListings = listings.map((item) => {
+      const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
+
+      return {
+        ...item,
+        culturalTags: (item.culturalTags || []).filter((t) => t && typeof t === 'object' && t._id),
+        isFavorited: currentUserId
+          ? safeFavorites.some((favId) => favId.toString() === currentUserId)
+          : false,
+        favoritesCount: safeFavorites.length,
+      };
+    });
+
+    res.status(200).json(formattedListings);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Get Public Listings Error:', error);
+    res.status(500).json({ message: 'Internal Server Error. Checking data integrity.' });
   }
 };
 
 export const getMyListings = async (req, res) => {
   try {
+    const currentUserId = req.user._id.toString();
+
     const listings = await Listing.find({ creatorId: req.user._id })
       .populate('category', 'title')
-      .populate('culturalTags', 'title image')
-      .sort({ createdAt: -1 });
-    res.status(200).json(listings);
+      .populate({
+        path: 'culturalTags',
+        select: 'title image',
+      })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const formattedListings = listings.map((item) => {
+      const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
+
+      return {
+        ...item,
+        culturalTags: (item.culturalTags || []).filter((t) => t && typeof t === 'object' && t._id),
+        isFavorited: safeFavorites.some((favId) => favId?.toString() === currentUserId),
+        favoritesCount: safeFavorites.length,
+      };
+    });
+
+    res.status(200).json(formattedListings);
   } catch (error) {
+    console.error('Get My Listings Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -157,22 +194,20 @@ export const toggleFavorite = async (req, res) => {
 
     const isFavorited = listing.favorites.includes(userId);
 
-    if (isFavorited) {
-      listing.favorites = listing.favorites.filter(
-        (favId) => favId.toString() !== userId.toString()
-      );
-    } else {
-      listing.favorites.push(userId);
-    }
+    const updatedListing = await Listing.findByIdAndUpdate(
+      id,
+      isFavorited ? { $pull: { favorites: userId } } : { $addToSet: { favorites: userId } },
+      { new: true }
+    );
 
-    await listing.save();
     res.status(200).json({
       message: isFavorited ? 'Removed from favorites' : 'Added to favorites',
-      favoritesCount: listing.favorites.length,
       isFavorited: !isFavorited,
+      favoritesCount: updatedListing.favorites.length,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Favorite Toggle Error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 

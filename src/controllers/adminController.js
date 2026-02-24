@@ -228,9 +228,24 @@ export const manageListings = async (req, res) => {
   try {
     const listings = await Listing.find()
       .populate('creatorId', 'firstName lastName username email')
-      .sort({ createdAt: -1 });
-    res.status(200).json(listings);
+      .populate('category', 'title')
+      .populate('culturalTags', 'title image')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const formattedListings = listings.map((item) => ({
+      ...item,
+      creatorName: item.creatorId
+        ? `${item.creatorId.firstName || ''} ${item.creatorId.lastName || ''}`.trim() ||
+          item.creatorId.username
+        : 'Unknown Creator',
+      favoritesCount: item.favorites?.length || 0,
+      categoryName: item.category?.title || 'Uncategorized',
+    }));
+
+    res.status(200).json(formattedListings);
   } catch (error) {
+    console.error('Admin Manage Listings Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
