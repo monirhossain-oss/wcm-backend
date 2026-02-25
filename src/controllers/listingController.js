@@ -17,14 +17,32 @@ export const getCategoriesAndTags = async (req, res) => {
 
 export const createListing = async (req, res) => {
   try {
-    const { title, description, externalUrl, region, country, tradition, category, culturalTags } =
-      req.body;
+    const {
+      title,
+      description,
+      externalUrls, 
+      region,
+      country,
+      tradition,
+      category,
+      culturalTags,
+    } = req.body;
 
     if (!req.file) {
       return res.status(400).json({ message: 'Please upload an image' });
     }
 
     const imageUrl = `/uploads/listings/${req.file.filename}`;
+
+    let urlList = [];
+    if (externalUrls) {
+      urlList = Array.isArray(externalUrls)
+        ? externalUrls
+        : externalUrls
+            .split(',')
+            .map((url) => url.trim())
+            .filter((url) => url !== '');
+    }
 
     let tagIds = [];
     if (culturalTags) {
@@ -40,7 +58,7 @@ export const createListing = async (req, res) => {
       creatorId: req.user._id,
       title,
       description,
-      externalUrl,
+      externalUrls: urlList,
       region,
       country,
       tradition,
@@ -72,6 +90,18 @@ export const updateListing = async (req, res) => {
 
     let updateData = { ...req.body };
 
+    updateData.status = 'pending';
+    updateData.rejectionReason = '';
+
+    if (updateData.externalUrls) {
+      updateData.externalUrls = Array.isArray(updateData.externalUrls)
+        ? updateData.externalUrls
+        : updateData.externalUrls
+            .split(',')
+            .map((url) => url.trim())
+            .filter((url) => url !== '');
+    }
+
     if (updateData.culturalTags) {
       updateData.culturalTags = Array.isArray(updateData.culturalTags)
         ? updateData.culturalTags
@@ -96,10 +126,13 @@ export const updateListing = async (req, res) => {
     const updatedListing = await Listing.findByIdAndUpdate(
       id,
       { $set: updateData },
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     ).populate('category culturalTags');
 
-    res.status(200).json({ message: 'Listing updated successfully', updatedListing });
+    res.status(200).json({
+      message: 'Listing updated and submitted for re-review',
+      updatedListing,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

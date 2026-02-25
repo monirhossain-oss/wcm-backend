@@ -17,10 +17,12 @@ const listingSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-    externalUrl: {
-      type: String,
-      required: true,
-    },
+    externalUrls: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
     region: {
       type: String,
       required: true,
@@ -48,6 +50,11 @@ const listingSchema = new mongoose.Schema(
       type: String,
       enum: ['pending', 'approved', 'rejected'],
       default: 'pending',
+    },
+    rejectionReason: {
+      type: String,
+      trim: true,
+      default: '',
     },
     image: {
       type: String,

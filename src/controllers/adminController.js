@@ -278,17 +278,28 @@ export const deleteListingByAdmin = async (req, res) => {
 export const updateListingStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, rejectionReason } = req.body;
+
+    let updateFields = { status };
+
+    if (status === 'rejected') {
+      updateFields.rejectionReason = rejectionReason || 'No reason provided';
+    } else if (status === 'approved') {
+      updateFields.rejectionReason = '';
+    }
 
     const updatedListing = await Listing.findByIdAndUpdate(
       id,
-      { $set: { status } },
-      { new: true }
+      { $set: updateFields },
+      { returnDocument: 'after' }
     ).populate('creatorId', 'firstName lastName email');
 
     if (!updatedListing) return res.status(404).json({ message: 'Listing not found' });
 
-    res.status(200).json({ message: `Listing is now ${status}`, updatedListing });
+    res.status(200).json({
+      message: `Listing is now ${status}`,
+      updatedListing,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
