@@ -9,13 +9,11 @@ export const createTag = async (req, res) => {
   try {
     const { title } = req.body;
 
-    // ইমেজ চেক করা (Listing এর মতো)
     if (!req.file) {
       return res.status(400).json({ message: 'Please upload a tag icon/image' });
     }
 
-    // সঠিক পাথ তৈরি (Listing এর মতো)
-    const imageUrl = `/uploads/listings/${req.file.filename}`;
+    const imageUrl = req.file.path;
 
     const newTag = await Tag.create({
       title,
@@ -24,15 +22,11 @@ export const createTag = async (req, res) => {
 
     res.status(201).json(newTag);
   } catch (error) {
-    // এরর হলে আপলোড হওয়া ইমেজটি ডিলিট করে দেওয়া (Listing এর মতো cleanup)
-    if (req.file) {
-      const uploadedPath = path.join(process.cwd(), 'uploads/listings', req.file.filename);
-      if (fs.existsSync(uploadedPath)) fs.unlinkSync(uploadedPath);
-    }
-
     if (error.code === 11000) {
       return res.status(400).json({ message: 'Tag title already exists' });
     }
+
+    console.error('Tag Creation Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -85,19 +79,19 @@ export const updateTag = async (req, res) => {
 
     let updateData = { title: req.body.title };
 
-    // যদি নতুন ইমেজ আপলোড করা হয়
     if (req.file) {
-      // পুরাতন ইমেজটি ডিলিট করা
-      const oldImagePath = path.join(process.cwd(), tag.image);
-      if (fs.existsSync(oldImagePath)) {
-        try {
-          fs.unlinkSync(oldImagePath);
-        } catch (err) {
-          console.error('Old tag image delete failed:', err);
+      if (tag.image && !tag.image.startsWith('http')) {
+        const oldImagePath = path.join(process.cwd(), tag.image);
+        if (fs.existsSync(oldImagePath)) {
+          try {
+            fs.unlinkSync(oldImagePath);
+          } catch (err) {
+            console.error('Old local tag image delete failed:', err);
+          }
         }
       }
-      // নতুন ইমেজের পাথ সেট করা
-      updateData.image = `/uploads/listings/${req.file.filename}`;
+
+      updateData.image = req.file.path;
     }
 
     const updatedTag = await Tag.findByIdAndUpdate(
@@ -108,6 +102,7 @@ export const updateTag = async (req, res) => {
 
     res.status(200).json(updatedTag);
   } catch (error) {
+    console.error('Update Tag Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -243,8 +238,8 @@ export const manageListings = async (req, res) => {
   try {
     const listings = await Listing.find()
       .populate('creatorId', 'firstName lastName username email')
-      .populate('category', 'title')
-      .populate('culturalTags', 'title image')
+      .populate('category', 'title') 
+      .populate('culturalTags', 'title image') 
       .sort({ createdAt: -1 })
       .lean();
 

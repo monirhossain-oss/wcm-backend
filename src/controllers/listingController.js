@@ -32,7 +32,7 @@ export const createListing = async (req, res) => {
       return res.status(400).json({ message: 'Please upload an image' });
     }
 
-    const imageUrl = `/uploads/listings/${req.file.filename}`;
+    const imageUrl = req.file.path;
 
     let urlList = [];
     if (externalUrls) {
@@ -70,10 +70,7 @@ export const createListing = async (req, res) => {
 
     res.status(201).json({ message: 'Listing created successfully', newListing });
   } catch (error) {
-    if (req.file) {
-      const uploadedPath = path.join(process.cwd(), 'uploads/listings', req.file.filename);
-      if (fs.existsSync(uploadedPath)) fs.unlinkSync(uploadedPath);
-    }
+    console.error('Create Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -113,15 +110,18 @@ export const updateListing = async (req, res) => {
     }
 
     if (req.file) {
-      const oldImagePath = path.join(process.cwd(), listing.image);
-      if (fs.existsSync(oldImagePath)) {
-        try {
-          fs.unlinkSync(oldImagePath);
-        } catch (err) {
-          console.error('Old image delete failed:', err);
+      if (listing.image && !listing.image.startsWith('http')) {
+        const oldImagePath = path.join(process.cwd(), listing.image);
+        if (fs.existsSync(oldImagePath)) {
+          try {
+            fs.unlinkSync(oldImagePath);
+          } catch (err) {
+            console.error('Old local image delete failed:', err);
+          }
         }
       }
-      updateData.image = `/uploads/listings/${req.file.filename}`;
+
+      updateData.image = req.file.path;
     }
 
     const updatedListing = await Listing.findByIdAndUpdate(

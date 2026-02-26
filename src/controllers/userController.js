@@ -72,19 +72,25 @@ export const becomeCreator = async (req, res) => {
   try {
     const { displayName, bio, country, city, language, websiteLink, socialLink } = req.body;
 
-    let profilePath = req.user.profile?.profileImage || '';
-    let coverPath = req.user.profile?.coverImage || '';
+    // ✅ ১. ডাটাবেজ থেকে বর্তমান ইউজারকে খুঁজে বের করুন (req.user এর ওপর নির্ভর করবেন না)
+    const currentUser = await User.findById(req.user._id);
 
+    // বর্তমান ইমেজগুলো ব্যাকআপ হিসেবে রাখা হচ্ছে
+    let profilePath = currentUser.profile?.profileImage || '';
+    let coverPath = currentUser.profile?.coverImage || '';
+
+    // ✅ ২. নতুন ফাইল আপলোড হলে তবেই পাথ আপডেট হবে
     if (req.files) {
-      if (req.files.profileImage && req.files.profileImage[0]) {
-        profilePath = `/uploads/listings/${req.files.profileImage[0].filename}`;
+      if (req.files.profileImage?.[0]) {
+        profilePath = req.files.profileImage[0].path; // Cloudinary URL
       }
-      if (req.files.coverImage && req.files.coverImage[0]) {
-        coverPath = `/uploads/listings/${req.files.coverImage[0].filename}`;
+      if (req.files.coverImage?.[0]) {
+        coverPath = req.files.coverImage[0].path; // Cloudinary URL
       }
     }
 
-    const user = await User.findByIdAndUpdate(
+    // ৩. ডাটাবেজ আপডেট
+    const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
         $set: {
@@ -95,26 +101,21 @@ export const becomeCreator = async (req, res) => {
           'profile.language': language,
           'profile.websiteLink': websiteLink,
           'profile.socialLink': socialLink,
-          'profile.profileImage': profilePath,
-          'profile.coverImage': coverPath,
+          'profile.profileImage': profilePath, // আপডেট হওয়া পাথ
+          'profile.coverImage': coverPath, // আপডেট হওয়া পাথ
 
           'creatorRequest.isApplied': true,
-          'creatorRequest.appliedAt': Date.now(),
+          'creatorRequest.appliedAt': new Date(),
           'creatorRequest.status': 'pending',
           'creatorRequest.rejectionReason': '',
-          'creatorRequest.adminComment': 'Re-applied for verification.',
         },
       },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true } // new: true নিশ্চিত করে যে আপডেট হওয়া ডাটা রিটার্ন করবে
     ).select('-password');
-
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
 
     res.status(200).json({
       message: 'Creator request submitted successfully',
-      user,
+      user: updatedUser,
     });
   } catch (error) {
     console.error('Become Creator Error:', error);
@@ -165,10 +166,10 @@ export const updateUserProfile = async (req, res) => {
 
     if (req.files) {
       if (req.files['profileImage']) {
-        profilePath = `/uploads/listings/${req.files['profileImage'][0].filename}`;
+        profilePath = req.files['profileImage'][0].path;
       }
       if (req.files['coverImage']) {
-        coverPath = `/uploads/listings/${req.files['coverImage'][0].filename}`;
+        coverPath = req.files['coverImage'][0].path;
       }
     }
 
@@ -194,6 +195,7 @@ export const updateUserProfile = async (req, res) => {
 
     res.status(200).json({ message: 'Profile updated successfully', user: updatedUser });
   } catch (error) {
+    console.error('Profile Update Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -220,12 +222,12 @@ export const updateCreatorProfile = async (req, res) => {
     };
 
     if (req.files) {
-      if (req.files.profileImage)
-        updateFields['profile.profileImage'] =
-          `/uploads/listings/${req.files.profileImage[0].filename}`;
-      if (req.files.coverImage)
-        updateFields['profile.coverImage'] =
-          `/uploads/listings/${req.files.coverImage[0].filename}`;
+      if (req.files.profileImage) {
+        updateFields['profile.profileImage'] = req.files.profileImage[0].path;
+      }
+      if (req.files.coverImage) {
+        updateFields['profile.coverImage'] = req.files.coverImage[0].path;
+      }
     }
 
     const user = await User.findByIdAndUpdate(
