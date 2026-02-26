@@ -3,7 +3,6 @@ import fs from 'fs';
 import path from 'path';
 import Category from '../models/Category.js';
 import Tag from '../models/Tag.js';
-import mongoose from 'mongoose';
 
 export const getCategoriesAndTags = async (req, res) => {
   try {
@@ -20,7 +19,8 @@ export const createListing = async (req, res) => {
     const {
       title,
       description,
-      externalUrls, 
+      externalUrls,
+      websiteLink,
       region,
       country,
       tradition,
@@ -59,6 +59,7 @@ export const createListing = async (req, res) => {
       title,
       description,
       externalUrls: urlList,
+      websiteLink,
       region,
       country,
       tradition,

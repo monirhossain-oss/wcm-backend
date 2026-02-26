@@ -23,6 +23,10 @@ const listingSchema = new mongoose.Schema(
         trim: true,
       },
     ],
+    websiteLink: {
+      type: String,
+      trim: true,
+    },
     region: {
       type: String,
       required: true,
