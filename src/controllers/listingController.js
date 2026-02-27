@@ -6,8 +6,10 @@ import Tag from '../models/Tag.js';
 
 export const getCategoriesAndTags = async (req, res) => {
   try {
-    const categories = await Category.find().sort({ title: 1 });
+    const categories = await Category.find().sort({ order: 1 });
+
     const tags = await Tag.find().sort({ title: 1 });
+
     res.status(200).json({ categories, tags });
   } catch (error) {
     res.status(500).json({ message: error.message });

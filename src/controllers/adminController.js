@@ -34,7 +34,11 @@ export const createTag = async (req, res) => {
 
 export const createCategory = async (req, res) => {
   try {
-    const category = await Category.create({ title: req.body.title });
+    const count = await Category.countDocuments();
+    const category = await Category.create({
+      title: req.body.title,
+      order: count,
+    });
     res.status(201).json(category);
   } catch (error) {
     if (error.code === 11000) {
@@ -376,13 +380,27 @@ export const getAdminStats = async (req, res) => {
       User.countDocuments({ 'creatorRequest.status': 'pending' }),
     ]);
 
-    console.log('Stats:', { totalUsers, totalListings, pendingRequests });
-
     res.status(200).json({
       totalUsers,
       totalListings,
       pendingRequests,
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const updateCategoryOrder = async (req, res) => {
+  try {
+    const { categories } = req.body;
+
+    const updatePromises = categories.map((cat, index) => {
+      return Category.findByIdAndUpdate(cat._id, { order: index });
+    });
+
+    await Promise.all(updatePromises);
+
+    res.status(200).json({ message: 'Order updated successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
