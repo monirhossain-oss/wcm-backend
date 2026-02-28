@@ -16,6 +16,8 @@ import {
   exportUsersExcel,
   getAdminStats,
   updateCategoryOrder,
+  getAllTransactions,
+  exportTransactionsExcel,
 } from '../controllers/adminController.js';
 import { authMiddleware, authorizeRoles } from '../middlewares/auth.js';
 import upload from '../config/multer.js';
@@ -26,6 +28,8 @@ router.use(authMiddleware);
 router.use(authorizeRoles('admin'));
 
 router.get('/stats', getAdminStats);
+router.get('/transactions', getAllTransactions);
+router.get('/export-transactions', exportTransactionsExcel);
 router.get('/listings', manageListings);
 router.get('/users', getAllUsers);
 router.get('/creator-requests', getCreatorRequests);

@@ -281,6 +281,36 @@ export const getPublicListings = async (req, res) => {
   }
 };
 
+export const handlePpcClick = async (req, res) => {
+  try {
+    const listing = await Listing.findById(req.params.id);
+
+    // Cost per click, defaulting to 0.1 if not set
+    const cost = listing.promotion.costPerClick || 0.1;
+
+    if (
+      listing &&
+      listing.promotion.type === 'ppc' &&
+      listing.promotion.ppcBalance >= cost
+    ) {
+      listing.promotion.ppcBalance = Number((listing.promotion.ppcBalance - cost).toFixed(2));
+
+      // if balance is insufficient after deduction, demote the listing
+      if (listing.promotion.ppcBalance < cost) {
+        listing.isPromoted = false;
+        listing.promotion.level = 0;
+        listing.promotion.type = 'none';
+      }
+
+      await listing.save();
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const getCreatorListingCount = async (req, res) => {
   try {
     const count = await Listing.countDocuments({

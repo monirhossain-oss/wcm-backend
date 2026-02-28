@@ -26,6 +26,9 @@
     "mongoose": "^9.2.1",
     "multer": "^2.0.2",
     "multer-storage-cloudinary": "^4.0.0",
-    "path": "^0.12.7"
+    "node-cron": "^4.2.1",
+    "path": "^0.12.7",
+    "pdfkit": "^0.17.2",
+    "stripe": "^20.4.0"
   }
 }

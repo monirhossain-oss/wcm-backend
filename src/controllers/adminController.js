@@ -5,6 +5,7 @@ import Tag from '../models/Tag.js';
 import path from 'path';
 import fs from 'fs';
 import ExcelJS from 'exceljs';
+import Transaction from '../models/Transaction.js';
 
 export const createTag = async (req, res) => {
   try {
@@ -373,17 +374,42 @@ export const exportUsersExcel = async (req, res) => {
 
 export const getAdminStats = async (req, res) => {
   try {
-    const [totalUsers, totalListings, pendingRequests] = await Promise.all([
-      User.countDocuments({ role: { $in: ['user', 'creator', 'admin'] } }),
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-      Listing.countDocuments(),
-      User.countDocuments({ 'creatorRequest.status': 'pending' }),
-    ]);
+    const [totalUsers, totalListings, pendingRequests, promotedCount, revenueData] =
+      await Promise.all([
+        User.countDocuments(),
+        Listing.countDocuments(),
+        User.countDocuments({
+          'creatorRequest.status': 'pending',
+          'creatorRequest.isApplied': true,
+        }),
+        Listing.countDocuments({ isPromoted: true }),
+
+        Transaction.aggregate([
+          { $match: { status: 'completed', createdAt: { $gte: thirtyDaysAgo } } },
+          {
+            $group: {
+              _id: null,
+              totalRevenue: { $sum: '$amountInEUR' },
+              totalVat: { $sum: '$vatAmount' },
+              transactionCount: { $sum: 1 },
+            },
+          },
+        ]),
+      ]);
+
+    const stats = revenueData[0] || { totalRevenue: 0, totalVat: 0, transactionCount: 0 };
 
     res.status(200).json({
       totalUsers,
       totalListings,
       pendingRequests,
+      promotedListings: promotedCount,
+      revenueLast30Days: stats.totalRevenue.toFixed(2),
+      vatLast30Days: stats.totalVat.toFixed(2),
+      totalTransactions: stats.transactionCount,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -403,5 +429,89 @@ export const updateCategoryOrder = async (req, res) => {
     res.status(200).json({ message: 'Order updated successfully' });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+export const getAllTransactions = async (req, res) => {
+  try {
+    const transactions = await Transaction.find()
+      .populate('creator', 'firstName lastName email username')
+      .populate('listing', 'title')
+      .sort({ createdAt: -1 });
+
+    res.status(200).json(transactions);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const exportTransactionsExcel = async (req, res) => {
+  try {
+    const transactionCursor = Transaction.find({})
+      .populate('creator', 'firstName lastName email username')
+      .populate('listing', 'title')
+      .sort({ createdAt: -1 })
+      .cursor();
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Payment Report');
+
+    worksheet.columns = [
+      { header: 'DATE', key: 'createdAt', width: 15 },
+      { header: 'INVOICE NO', key: 'invoiceNumber', width: 20 },
+      { header: 'CREATOR', key: 'creatorName', width: 25 },
+      { header: 'LISTING', key: 'listingTitle', width: 30 },
+      { header: 'PACKAGE', key: 'packageType', width: 12 },
+      { header: 'CURRENCY', key: 'currency', width: 10 },
+      { header: 'AMOUNT PAID', key: 'amountPaid', width: 15 },
+      { header: 'FX RATE', key: 'fxRate', width: 10 },
+      { header: 'EUR (INTERNAL)', key: 'amountInEUR', width: 15 },
+      { header: 'VAT (19% EUR)', key: 'vatAmount', width: 15 },
+      { header: 'STRIPE ID', key: 'stripeSessionId', width: 30 },
+    ];
+
+    worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    worksheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFEA580C' },
+    };
+
+    let count = 0;
+
+    for (let tx = await transactionCursor.next(); tx != null; tx = await transactionCursor.next()) {
+      worksheet.addRow({
+        createdAt: tx.createdAt ? tx.createdAt.toISOString().split('T')[0] : 'N/A',
+        invoiceNumber: tx.invoiceNumber || 'N/A',
+        creatorName: tx.creator
+          ? `${tx.creator.firstName || ''} ${tx.creator.lastName || ''}`.trim()
+          : 'N/A',
+        listingTitle: tx.listing ? tx.listing.title : 'Deleted Listing',
+        packageType: (tx.packageType || '').toUpperCase(),
+        currency: (tx.currency || '').toUpperCase(),
+        amountPaid: tx.amountPaid,
+        fxRate: tx.fxRate,
+        amountInEUR: tx.amountInEUR.toFixed(2),
+        vatAmount: tx.vatAmount.toFixed(2),
+        stripeSessionId: tx.stripeSessionId,
+      });
+      count++;
+    }
+
+    console.log(`Exported ${count} transactions to Excel.`);
+
+    const fileName = `Payment_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+
+    await workbook.xlsx.write(res);
+    return res.status(200).end();
+  } catch (error) {
+    console.error('TRANSACTION EXPORT ERROR:', error);
+    if (!res.headersSent) res.status(500).send('Export failed');
   }
 };

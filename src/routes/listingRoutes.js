@@ -10,6 +10,7 @@ import {
   getCategoriesAndTags,
   getListingById,
   getCreatorListingCount,
+  handlePpcClick,
 } from '../controllers/listingController.js';
 import { authMiddleware, authorizeRoles, optionalAuth } from '../middlewares/auth.js';
 
@@ -21,6 +22,8 @@ router.get('/meta-data', getCategoriesAndTags);
 router.get('/count/:creatorId', getCreatorListingCount);
 
 router.post('/favorite/:id', authMiddleware, toggleFavorite);
+
+router.post('/:id/click', handlePpcClick);
 
 router.get('/my-listings', authMiddleware, authorizeRoles('creator'), getMyListings);
 router.post(
