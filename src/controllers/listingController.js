@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import Category from '../models/Category.js';
 import Tag from '../models/Tag.js';
+import mongoose from 'mongoose';
 
 export const getCategoriesAndTags = async (req, res) => {
   try {
@@ -190,13 +191,129 @@ export const updateListing = async (req, res) => {
   }
 };
 
+// export const getPublicListings = async (req, res) => {
+//   try {
+//     const { filter, search, category, region, creatorId, limit, page } = req.query;
+
+//     let query = { status: 'approved' };
+
+//     // Time filter logic
+//     const now = new Date();
+//     if (filter === 'Today') {
+//       const startOfDay = new Date();
+//       startOfDay.setHours(0, 0, 0, 0);
+//       query.createdAt = { $gte: startOfDay };
+//     } else if (filter === 'This week') {
+//       const startOfWeek = new Date();
+//       startOfWeek.setDate(now.getDate() - 7);
+//       startOfWeek.setHours(0, 0, 0, 0);
+//       query.createdAt = { $gte: startOfWeek };
+//     }
+
+//     // Category, Region, Creator filters
+//     if (creatorId) query.creatorId = creatorId;
+//     if (category && category !== 'All') {
+//       query.category = category;
+//     }
+//     if (region && region !== 'All') query.region = region;
+
+//     // Search filter logic (Title, Country, Tradition) with case-insensitive regex
+//     if (search) {
+//       query.$or = [
+//         { title: { $regex: search, $options: 'i' } },
+//         { country: { $regex: search, $options: 'i' } },
+//         { tradition: { $regex: search, $options: 'i' } },
+//       ];
+//     }
+
+//     // Pagination logic
+//     const resPerPage = parseInt(limit) || 20;
+//     const currentPage = parseInt(page) || 1;
+//     const skip = resPerPage * (currentPage - 1);
+
+//     // Data fetching login
+//     // Searching, filtering, and pagination are done in the query, but sorting is done in-memory after fetching to ensure promoted listings are always on top regardless of other filters.
+//     let listings = await Listing.find(query)
+//       .populate('creatorId', 'username profile')
+//       .populate('category', 'title')
+//       .populate('culturalTags', 'title image')
+//       .sort({
+//         isPromoted: -1,
+//         'promotion.level': -1,
+//         views: -1,
+//         createdAt: -1,
+//       })
+//       .limit(resPerPage)
+//       .skip(skip)
+//       .lean();
+
+//     // Total count for pagination
+//     const totalListings = await Listing.countDocuments(query);
+
+//     // Favorites logic with safety checks
+//     const currentUserId = req.user ? req.user._id.toString() : null;
+
+//     const formattedListings = listings.map((item) => {
+//       const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
+//       return {
+//         ...item,
+//         isFavorited: currentUserId
+//           ? safeFavorites.some((favId) => favId.toString() === currentUserId)
+//           : false,
+//         favoritesCount: safeFavorites.length,
+//       };
+//     });
+
+//     // Sending response with total count for pagination
+//     res.status(200).json({
+//       success: true,
+//       total: totalListings,
+//       count: formattedListings.length,
+//       currentPage,
+//       listings: formattedListings,
+//     });
+//   } catch (error) {
+//     console.error('Public Listings Error:', error);
+//     res.status(500).json({
+//       success: false,
+//       message: 'Server Error',
+//       details: error.message,
+//     });
+//   }
+// };
+
 export const getPublicListings = async (req, res) => {
   try {
-    const { filter, search, category, region, creatorId, limit, page } = req.query;
+    // tradition প্যারামিটারটি অ্যাড করা হয়েছে
+    const { filter, search, category, region, tradition, creatorId, limit, page } = req.query;
 
     let query = { status: 'approved' };
 
-    // Time filter logic
+    // ১. স্মার্ট ক্যাটাগরি ফিল্টার (নাম বা আইডি চেক)
+    if (category && category !== 'All' && category !== 'undefined') {
+      if (mongoose.Types.ObjectId.isValid(category)) {
+        query.category = category;
+      } else {
+        // যদি টেক্সট আসে (যেমন: 'Food'), তবে ডাটাবেস থেকে ওই নামের আইডি খুঁজে বের করবে
+        const foundCategory = await Category.findOne({
+          title: { $regex: category, $options: 'i' },
+        });
+        if (foundCategory) {
+          query.category = foundCategory._id;
+        } else {
+          // যদি ওই নামে ক্যাটাগরি না থাকে, তবে রেজাল্ট খালি আসবে (যাতে ক্র্যাশ না করে)
+          query.category = new mongoose.Types.ObjectId();
+        }
+      }
+    }
+
+    // ২. রিজিয়ন এবং ট্র্যাডিশন (ট্যাডিশন ড্রপডাউনের জন্য)
+    if (region && region !== 'All') query.region = region;
+    if (tradition && tradition !== 'All') {
+      query.tradition = { $regex: tradition, $options: 'i' };
+    }
+
+    // ৩. টাইম ফিল্টার (আপনার আগের লজিক)
     const now = new Date();
     if (filter === 'Today') {
       const startOfDay = new Date();
@@ -209,14 +326,9 @@ export const getPublicListings = async (req, res) => {
       query.createdAt = { $gte: startOfWeek };
     }
 
-    // Category, Region, Creator filters
     if (creatorId) query.creatorId = creatorId;
-    if (category && category !== 'All') {
-      query.category = category;
-    }
-    if (region && region !== 'All') query.region = region;
 
-    // Search filter logic (Title, Country, Tradition) with case-insensitive regex
+    // ৪. সার্চ লজিক
     if (search) {
       query.$or = [
         { title: { $regex: search, $options: 'i' } },
@@ -225,13 +337,12 @@ export const getPublicListings = async (req, res) => {
       ];
     }
 
-    // Pagination logic
-    const resPerPage = parseInt(limit) || 20;
+    // ৫. পেজিনেশন
+    const resPerPage = parseInt(limit) || 10; // ডিফল্ট ১০ সেট করা ভালো স্লাইডারের জন্য
     const currentPage = parseInt(page) || 1;
     const skip = resPerPage * (currentPage - 1);
 
-    // Data fetching login
-    // Searching, filtering, and pagination are done in the query, but sorting is done in-memory after fetching to ensure promoted listings are always on top regardless of other filters.
+    // ৬. ডাটা ফেচিং ও সর্টিং (PPC & Boost Level Priority)
     let listings = await Listing.find(query)
       .populate('creatorId', 'username profile')
       .populate('category', 'title')
@@ -246,10 +357,7 @@ export const getPublicListings = async (req, res) => {
       .skip(skip)
       .lean();
 
-    // Total count for pagination
     const totalListings = await Listing.countDocuments(query);
-
-    // Favorites logic with safety checks
     const currentUserId = req.user ? req.user._id.toString() : null;
 
     const formattedListings = listings.map((item) => {
@@ -263,7 +371,6 @@ export const getPublicListings = async (req, res) => {
       };
     });
 
-    // Sending response with total count for pagination
     res.status(200).json({
       success: true,
       total: totalListings,
@@ -288,11 +395,7 @@ export const handlePpcClick = async (req, res) => {
     // Cost per click, defaulting to 0.1 if not set
     const cost = listing.promotion.costPerClick || 0.1;
 
-    if (
-      listing &&
-      listing.promotion.type === 'ppc' &&
-      listing.promotion.ppcBalance >= cost
-    ) {
+    if (listing && listing.promotion.type === 'ppc' && listing.promotion.ppcBalance >= cost) {
       listing.promotion.ppcBalance = Number((listing.promotion.ppcBalance - cost).toFixed(2));
 
       // if balance is insufficient after deduction, demote the listing
