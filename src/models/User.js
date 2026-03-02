@@ -25,7 +25,7 @@ const userSchema = new mongoose.Schema(
         enum: ['pending', 'approved', 'rejected', 'needs_review'],
         default: 'pending',
       },
-      rejectionReason: { type: String, default: '' }, 
+      rejectionReason: { type: String, default: '' },
       adminComment: { type: String, default: '' },
     },
     profile: {
@@ -38,6 +38,11 @@ const userSchema = new mongoose.Schema(
       language: { type: String },
       websiteLink: { type: String },
       socialLink: { type: String },
+    },
+    walletBalance: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
   },
   { timestamps: true }

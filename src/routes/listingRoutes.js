@@ -11,6 +11,7 @@ import {
   getListingById,
   getCreatorListingCount,
   handlePpcClick,
+  cancelPromotion,
 } from '../controllers/listingController.js';
 import { authMiddleware, authorizeRoles, optionalAuth } from '../middlewares/auth.js';
 
@@ -43,5 +44,6 @@ router.put(
 router.delete('/delete/:id', authMiddleware, authorizeRoles('creator'), deleteListing);
 
 router.get('/:id', optionalAuth, getListingById);
+router.patch('/:id/cancel-promotion', authMiddleware, cancelPromotion);
 
 export default router;

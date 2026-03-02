@@ -1,11 +1,16 @@
+// src/routes/paymentRoutes.js
 import express from 'express';
-import { createCheckoutSession, handleStripeWebhook } from '../controllers/PaymentController.js';
+import { createCheckoutSession, generateInvoice, handleStripeWebhook, payWithWallet } from '../controllers/PaymentController.js';
 import { authMiddleware } from '../middlewares/auth.js';
 
 const router = express.Router();
 
-router.post('/create-checkout-session', authMiddleware, createCheckoutSession);
-
 router.post('/webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
+
+router.post('/create-checkout-session', express.json(), authMiddleware, createCheckoutSession);
+
+router.get('/creator/invoice/:id', authMiddleware, generateInvoice);
+
+router.post('/pay-with-wallet', authMiddleware, payWithWallet);
 
 export default router;

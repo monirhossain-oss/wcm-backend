@@ -21,17 +21,16 @@ app.use(
   })
 );
 
-app.use('/api/payments', paymentRoutes);
-
-app.use(express.json());
 app.use(cookieParser());
-
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/api/payments', paymentRoutes);
+app.use(express.json());
 
 app.use('/api/users', userRoutes);
 app.use('/api/listings', listingRoutes);
 app.use('/api/creator', creatorRoutes);
 app.use('/api/admin', adminRoutes);
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 app.get('/', (req, res) => {
   res.send('Server is running....');
