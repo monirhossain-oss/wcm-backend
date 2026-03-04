@@ -1,6 +1,10 @@
-// src/routes/paymentRoutes.js
 import express from 'express';
-import { createCheckoutSession, generateInvoice, handleStripeWebhook, payWithWallet } from '../controllers/PaymentController.js';
+import {
+  createCheckoutSession,
+  generateInvoice,
+  handleStripeWebhook,
+  payWithWallet,
+} from '../controllers/PaymentController.js';
 import { authMiddleware } from '../middlewares/auth.js';
 
 const router = express.Router();
