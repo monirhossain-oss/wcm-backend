@@ -45,5 +45,10 @@ listingSchema.index({
   tradition: 'text',
 });
 
+listingSchema.index({ isPromoted: 1 });
+listingSchema.index({ status: 1 });
+listingSchema.index({ 'promotion.boost.isActive': 1, 'promotion.boost.expiresAt': 1 });
+listingSchema.index({ 'promotion.ppc.isActive': 1, 'promotion.ppc.ppcBalance': 1 });
+
 const Listing = mongoose.model('Listing', listingSchema);
 export default Listing;

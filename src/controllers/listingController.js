@@ -328,70 +328,115 @@ export const handlePpcClick = async (req, res) => {
     const listingId = req.params.id;
     const userIP =
       req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || 'unknown';
-    const cacheKey = `${userIP}_${listingId}`;
+    const cacheKey = `ppc_${userIP}_${listingId}`;
     const now = Date.now();
+
+    // ১. ১ মিনিটের কুলডাউন চেক
+    if (clickCooldowns.has(cacheKey)) {
+      const lastClick = clickCooldowns.get(cacheKey);
+      if (now - lastClick < 60000) {
+        const simpleListing = await Listing.findById(listingId).select('websiteLink');
+        return res
+          .status(200)
+          .json({ success: true, redirectUrl: simpleListing?.websiteLink || '/' });
+      }
+    }
+
+    // ২. রিকোয়েস্ট পাওয়ার সাথে সাথেই কুলডাউন সেট করে দিন (Locking early)
+    clickCooldowns.set(cacheKey, now);
 
     const listing = await Listing.findById(listingId);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
-
-    const lastClick = clickCooldowns.get(cacheKey);
-    const isSpam = lastClick && now - lastClick < 60000;
 
     const cost = listing.promotion?.ppc?.costPerClick || 0.1;
     let wasCharged = false;
 
     if (
-      !isSpam &&
       listing.isPromoted &&
       listing.promotion?.ppc?.isActive &&
       listing.promotion?.ppc?.ppcBalance >= cost
     ) {
-      listing.promotion.ppc.ppcBalance = Number(
-        (listing.promotion.ppc.ppcBalance - cost).toFixed(2)
-      );
-      listing.promotion.ppc.totalClicks = (listing.promotion.ppc.totalClicks || 0) + 1;
-
-      if (listing.promotion.ppc.ppcBalance < cost) {
-        listing.promotion.ppc.isActive = false;
-        if (!listing.promotion?.boost?.isActive) {
-          listing.isPromoted = false;
-        }
-      }
-
+      const newBalance = Number((listing.promotion.ppc.ppcBalance - cost).toFixed(2));
+      const shouldDeactivate = newBalance < cost;
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      await Analytics.findOneAndUpdate(
-        {
-          listingId: listing._id,
-          creatorId: listing.creatorId,
-          date: today,
-        },
-        { $inc: { clicks: 1 } },
-        { upsert: true, new: true }
-      );
-
-      await listing.save();
+      // ৩. এটমিক আপডেট
+      await Promise.all([
+        Listing.findByIdAndUpdate(listingId, {
+          $set: {
+            'promotion.ppc.ppcBalance': newBalance,
+            'promotion.ppc.isActive': !shouldDeactivate,
+            isPromoted: listing.promotion.boost.isActive || !shouldDeactivate,
+          },
+          $inc: { 'promotion.ppc.totalClicks': 1 },
+        }),
+        Analytics.findOneAndUpdate(
+          { listingId: listing._id, creatorId: listing.creatorId, date: today },
+          { $inc: { clicks: 1 } },
+          { upsert: true, returnDocument: 'after' }
+        ),
+      ]);
 
       wasCharged = true;
-
-      clickCooldowns.set(cacheKey, now);
-      setTimeout(() => clickCooldowns.delete(cacheKey), 300000);
     }
+
+    // ক্লিনআপ কুলডাউন ৫ মিনিট পর
+    setTimeout(() => clickCooldowns.delete(cacheKey), 300000);
 
     res.status(200).json({
       success: true,
       redirectUrl: listing.websiteLink || '/',
       charged: wasCharged,
-      message: isSpam
-        ? 'Spam protected (Not charged)'
-        : wasCharged
-          ? 'Valid PPC click'
-          : 'Click recorded (Not charged)',
     });
   } catch (error) {
     console.error('PPC Click Error:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
+    res.status(500).json({ success: false });
+  }
+};
+
+export const getListingById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const clientIp =
+      req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || 'unknown';
+    const cacheKey = `view_${id}_${clientIp}`;
+
+    const now = Date.now();
+    const cooldown = 24 * 60 * 60 * 1000;
+
+    let listing = await Listing.findById(id)
+      .populate('creatorId', 'username firstName lastName profile email')
+      .populate('category', 'title')
+      .populate('culturalTags', 'title image');
+
+    if (!listing) return res.status(404).json({ message: 'Listing not found' });
+
+    const lastViewed = viewCache.get(cacheKey);
+
+    if (!lastViewed || now - lastViewed > cooldown) {
+      viewCache.set(cacheKey, now); // ১ দিন পর্যন্ত এই আইপি থেকে আর ভিউ বাড়বে না
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // সরাসরি এটমিক আপডেট (কোনো ডাবল কাউন্ট হবে না)
+      await Promise.all([
+        Listing.findByIdAndUpdate(id, { $inc: { views: 1 } }),
+        Analytics.findOneAndUpdate(
+          { listingId: listing._id, creatorId: listing.creatorId, date: today },
+          { $inc: { views: 1 } },
+          { upsert: true, returnDocument: 'after' }
+        ),
+      ]);
+
+      listing.views += 1;
+    }
+
+    res.status(200).json(listing);
+  } catch (error) {
+    console.error('View Tracking Error:', error);
+    res.status(500).json({ success: false, message: 'Server Error' });
   }
 };
 
@@ -404,59 +449,6 @@ export const getCreatorListingCount = async (req, res) => {
     res.status(200).json({ count });
   } catch (err) {
     res.status(500).json(0);
-  }
-};
-
-export const getListingById = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const clientIp =
-      req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || 'unknown';
-    const cacheKey = `${id}-${clientIp}`;
-
-    const now = Date.now();
-    const cooldown = 24 * 60 * 60 * 1000;
-
-    let listing = await Listing.findById(id)
-      .populate('creatorId', 'username firstName lastName profile email')
-      .populate('category', 'title')
-      .populate('culturalTags', 'title image');
-
-    if (!listing) {
-      return res.status(404).json({ message: 'Listing not found' });
-    }
-
-    const lastViewed = viewCache.get(cacheKey);
-
-    if (!lastViewed || now - lastViewed > cooldown) {
-      listing.views = (listing.views || 0) + 1;
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      await Analytics.findOneAndUpdate(
-        {
-          listingId: listing._id,
-          creatorId: listing.creatorId,
-          date: today,
-        },
-        { $inc: { views: 1 } },
-        { upsert: true, new: true }
-      );
-
-      await listing.save();
-
-      viewCache.set(cacheKey, now);
-    }
-
-    res.status(200).json(listing);
-  } catch (error) {
-    console.error('Error fetching listing details:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch listing details',
-      error: error.message,
-    });
   }
 };
 

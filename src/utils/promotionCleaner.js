@@ -2,13 +2,11 @@ import cron from 'node-cron';
 import Listing from '../models/Listing.js';
 
 const startPromotionCleaner = () => {
-  cron.schedule('0 0 * * *', async () => {
-    console.log('--- Initiating Global Promotion Protocol Clean-up ---');
-
+  cron.schedule('* * * * *', async () => {
     try {
       const now = new Date();
 
-      const expiredBoosts = await Listing.updateMany(
+      await Listing.updateMany(
         {
           'promotion.boost.isActive': true,
           'promotion.boost.expiresAt': { $lt: now },
@@ -16,7 +14,7 @@ const startPromotionCleaner = () => {
         { $set: { 'promotion.boost.isActive': false } }
       );
 
-      const emptyPpc = await Listing.updateMany(
+      await Listing.updateMany(
         {
           'promotion.ppc.isActive': true,
           'promotion.ppc.ppcBalance': { $lte: 0 },
@@ -24,31 +22,53 @@ const startPromotionCleaner = () => {
         { $set: { 'promotion.ppc.isActive': false } }
       );
 
-      const listingsToSync = await Listing.find({ isPromoted: true });
-
-      for (let listing of listingsToSync) {
-        const hasActivePpc = listing.promotion?.ppc?.isActive && listing.promotion?.ppc?.ppcBalance > 0;
-        const hasActiveBoost = listing.promotion?.boost?.isActive && listing.promotion?.boost?.expiresAt > now;
-
-        if (!hasActivePpc && !hasActiveBoost) {
-          listing.isPromoted = false;
+      const deactivatedResult = await Listing.updateMany(
+        {
+          isPromoted: true,
+          'promotion.boost.isActive': false,
+          'promotion.ppc.isActive': false,
+        },
+        {
+          $set: {
+            isPromoted: false,
+            'promotion.level': 0,
+          },
         }
+      );
 
-        const boostAmt = hasActiveBoost ? (Number(listing.promotion?.boost?.amountPaid) || 0) : 0;
-        const ppcAmt = hasActivePpc ? (Number(listing.promotion?.ppc?.amountPaid) || 0) : 0;
-        const viewsCount = Number(listing.views) || 0;
-        const favCount = listing.favorites?.length || 0;
+      const activePromotions = await Listing.find({ isPromoted: true });
 
-        listing.promotion.level = Math.floor(
-          boostAmt * 1.5 + ppcAmt * 1.2 + viewsCount * 0.1 + favCount * 2
-        );
+      if (activePromotions.length > 0) {
+        const bulkOps = activePromotions.map((listing) => {
+          const boostAmt = listing.promotion.boost.isActive
+            ? listing.promotion.boost.amountPaid || 0
+            : 0;
+          const ppcAmt = listing.promotion.ppc.isActive ? listing.promotion.ppc.amountPaid || 0 : 0;
+          const viewsCount = listing.views || 0;
+          const favCount = listing.favorites?.length || 0;
 
-        await listing.save(); 
+          const newLevel = Math.floor(
+            boostAmt * 1.5 + ppcAmt * 1.2 + viewsCount * 0.1 + favCount * 2
+          );
+
+          return {
+            updateOne: {
+              filter: { _id: listing._id },
+              update: { $set: { 'promotion.level': newLevel } },
+            },
+          };
+        });
+
+        if (bulkOps.length > 0) {
+          await Listing.bulkWrite(bulkOps);
+        }
       }
 
-      console.log(`✅ Deactivated Expired Boosts: ${expiredBoosts.modifiedCount}`);
-      console.log(`✅ Deactivated Empty PPC: ${emptyPpc.modifiedCount}`);
-      console.log(`✅ Synced Rank & isPromoted status for: ${listingsToSync.length} assets`);
+      if (deactivatedResult.modifiedCount > 0) {
+        console.log(
+          `[Cron] Sync: ${deactivatedResult.modifiedCount} listings returned to standard status.`
+        );
+      }
     } catch (error) {
       console.error('❌ Promotion Protocol Error:', error);
     }

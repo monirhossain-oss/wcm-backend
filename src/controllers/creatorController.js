@@ -114,35 +114,36 @@ export const getPromotionAnalytics = async (req, res) => {
       .lean();
 
     if (!listing) {
-      return res.status(404).json({
-        success: false,
-        message: 'Node not found or unauthorized.',
-      });
+      return res.status(404).json({ success: false, message: 'Listing not found' });
     }
 
-    const promotion = listing.promotion || { ppc: {}, boost: {}, level: 0 };
-    const ppc = promotion.ppc || {};
-    const boost = promotion.boost || {};
+    const ppc = listing.promotion?.ppc || {};
+    const boost = listing.promotion?.boost || {};
 
-    const totalPurchasedClicks = Number(ppc.totalClicks) || 0;
-    const costPerClick = Number(ppc.costPerClick) || 0;
+    // --- PPC Calculation Logic ---
+    const costPerClick = Number(ppc.costPerClick) || 0.1;
     const currentBalance = Number(ppc.ppcBalance) || 0;
+    const clicksUsed = Number(ppc.totalClicks) || 0;
 
-    // Fixed Calculation Logic
-    const initialTotalBudget = totalPurchasedClicks * costPerClick;
-    const clicksRemaining =
-      costPerClick > 0 ? Math.max(0, Math.floor(currentBalance / costPerClick)) : 0;
-    const clicksUsed =
-      costPerClick > 0
-        ? Math.max(0, Math.floor((initialTotalBudget - currentBalance) / costPerClick))
-        : 0;
+    // ১. মোট কত টাকার পিপিছি কেনা হয়েছিল (amountPaid) সেটা থেকে মোট ক্লিক সংখ্যা বের করা
+    const amountPaid = Number(ppc.amountPaid) || 0;
+    let totalPurchasedClicks = amountPaid > 0 ? Math.floor(amountPaid / costPerClick) : 0;
 
+    // সেফটি চেক: যদি কোনো কারণে totalPurchasedClicks খরচ করা ক্লিকের চেয়ে কম দেখায় (পুরানো ডাটা হলে)
+    if (totalPurchasedClicks < clicksUsed) {
+      totalPurchasedClicks = clicksUsed + Math.floor(currentBalance / costPerClick);
+    }
+
+    // ২. কয়টা ক্লিক বাকি আছে
+    const clicksRemaining = Math.max(0, Math.floor(currentBalance / costPerClick));
+
+    // ৩. কনজাম্পশন রেট (শতকরা কতটুকু শেষ হয়েছে)
     const consumptionRate =
       totalPurchasedClicks > 0 ? Number(((clicksUsed / totalPurchasedClicks) * 100).toFixed(1)) : 0;
 
+    // --- Boost Calculation ---
     let daysRemaining = 0;
     let boostProgress = 0;
-
     if (boost.isActive && boost.expiresAt) {
       const now = new Date();
       const expiry = new Date(boost.expiresAt);
@@ -157,7 +158,7 @@ export const getPromotionAnalytics = async (req, res) => {
         title: listing.title,
         image: listing.image,
         isPromoted: !!listing.isPromoted,
-        level: promotion.level || 0,
+        level: listing.promotion?.level || 0,
         views: listing.views || 0,
         ppc: {
           isActive: !!(ppc.isActive && currentBalance >= costPerClick),
@@ -166,22 +167,18 @@ export const getPromotionAnalytics = async (req, res) => {
           totalPurchasedClicks,
           clicksUsed,
           clicksRemaining,
-          consumptionRate,
+          consumptionRate: Math.min(100, consumptionRate), // ১০০% এর বেশি হবে না
         },
         boost: {
           isActive: !!(boost.isActive && daysRemaining > 0),
           expiresAt: boost.expiresAt,
           daysRemaining,
-          amountPaid: boost.amountPaid || 0,
           boostProgress,
         },
       },
     });
   } catch (error) {
     console.error('Analytics Error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error loading insights',
-    });
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 };
