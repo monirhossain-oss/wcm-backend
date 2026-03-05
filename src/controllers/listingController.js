@@ -204,7 +204,8 @@ export const updateListing = async (req, res) => {
 
 export const getPublicListings = async (req, res) => {
   try {
-    const { filter, search, category, region, tradition, creatorId, limit, page } = req.query;
+    const { filter, search, category, region, tradition, creatorId, limit, page, offset } =
+      req.query;
 
     let query = { status: 'approved' };
 
@@ -251,8 +252,8 @@ export const getPublicListings = async (req, res) => {
     }
 
     const resPerPage = parseInt(limit) || 10;
-    const currentPage = parseInt(page) || 1;
-    const skip = resPerPage * (currentPage - 1);
+
+    const skip = offset ? parseInt(offset) : resPerPage * (parseInt(page || 1) - 1);
 
     let listings = await Listing.find(query)
       .populate('creatorId', 'username profile')
@@ -286,7 +287,9 @@ export const getPublicListings = async (req, res) => {
       success: true,
       total: totalListings,
       count: formattedListings.length,
-      currentPage,
+      currentPage: parseInt(page) || 1,
+      nextOffset: skip + formattedListings.length,
+      hasMore: skip + formattedListings.length < totalListings,
       listings: formattedListings,
     });
   } catch (error) {
