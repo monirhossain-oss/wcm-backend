@@ -433,11 +433,13 @@ export const handlePpcClick = async (req, res) => {
 
     // ব্যালেন্স চেক এবং আপডেট
     if (listing.promotion.ppc.ppcBalance >= cost) {
-      listing.promotion.ppc.ppcBalance = Number((listing.promotion.ppc.ppcBalance - cost).toFixed(4));
+      listing.promotion.ppc.ppcBalance = Number(
+        (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
+      );
       listing.promotion.ppc.executedClicks += 1;
 
       // ব্যালেন্স শেষ হয়ে গেলে রিসেট
-      if (listing.promotion.ppc.ppcBalance < 0.01) {
+      if (listing.promotion.ppc.ppcBalance < cost) {
         listing.promotion.ppc.isActive = false;
         listing.promotion.ppc.ppcBalance = 0;
         listing.promotion.ppc.amountPaid = 0;
