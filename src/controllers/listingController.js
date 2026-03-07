@@ -9,6 +9,14 @@ import { calculateListingLevel } from '../utils/levelCalculator.js';
 import Analytics from '../models/Analytics.js';
 import InteractionLog from '../models/InteractionLog.js';
 
+const getClientIp = (req) => {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.connection?.remoteAddress || 'unknown-ip';
+};
+
 export const getCategoriesAndTags = async (req, res) => {
   try {
     const [categories, regions] = await Promise.all([
@@ -321,11 +329,6 @@ export const getPublicListings = async (req, res) => {
   }
 };
 
-// --- IP Helper ---
-const getClientIp = (req) => {
-  return req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || req.ip;
-};
-
 export const getListingById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -375,6 +378,7 @@ export const handlePpcClick = async (req, res) => {
   try {
     const { id } = req.params;
     const userIp = getClientIp(req);
+    const userId = req.user?._id;
 
     const listing = await Listing.findById(id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
@@ -385,12 +389,12 @@ export const handlePpcClick = async (req, res) => {
 
     const alreadyClicked = await InteractionLog.findOne({
       listingId: id,
-      ip: userIp,
       type: 'ppc_click',
+      $or: [{ ip: userIp }, ...(userId ? [{ userId: userId }] : [])],
     });
 
     if (alreadyClicked) {
-      return res.status(200).json({ message: 'Click already recorded.' });
+      return res.status(200).json({ message: 'Click already recorded for this period.' });
     }
 
     const cost = listing.promotion.ppc.costPerClick || 0.1;
@@ -401,26 +405,18 @@ export const handlePpcClick = async (req, res) => {
       );
       listing.promotion.ppc.executedClicks += 1;
 
-      if (listing.promotion.ppc.ppcBalance < 0.01) {
-        listing.promotion.ppc.isActive = false;
-        listing.promotion.ppc.ppcBalance = 0;
-
-        const now = new Date();
-        const hasActiveBoost =
-          listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now;
-
-        if (!hasActiveBoost) {
-          listing.isPromoted = false;
-          listing.promotion.level = 0;
-        }
-      }
-
       await listing.save();
 
-      await InteractionLog.create({ listingId: id, ip: userIp, type: 'ppc_click' });
+      await InteractionLog.create({
+        listingId: id,
+        ip: userIp,
+        userId: userId || null,
+        type: 'ppc_click',
+      });
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
+
       await Analytics.findOneAndUpdate(
         { listingId: id, date: today },
         {
@@ -430,19 +426,85 @@ export const handlePpcClick = async (req, res) => {
         { upsert: true }
       );
 
-      return res.status(200).json({
-        success: true,
-        balance: listing.promotion.ppc.ppcBalance,
-        status: listing.isPromoted ? 'Still Promoted' : 'Back to Standard',
-      });
+      res.status(200).json({ success: true, balance: listing.promotion.ppc.ppcBalance });
     }
-
-    res.status(400).json({ message: 'Insufficient PPC balance.' });
   } catch (error) {
-    console.error('PPC Click Error:', error);
     res.status(500).json({ message: error.message });
   }
 };
+
+// export const handlePpcClick = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const userIp = getClientIp(req);
+
+//     const listing = await Listing.findById(id);
+//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
+
+//     if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
+//       return res.status(200).json({ success: true, message: 'Organic click.' });
+//     }
+
+//     const alreadyClicked = await InteractionLog.findOne({
+//       listingId: id,
+//       ip: userIp,
+//       type: 'ppc_click',
+//     });
+
+//     if (alreadyClicked) {
+//       return res.status(200).json({ message: 'Click already recorded.' });
+//     }
+
+//     const cost = listing.promotion.ppc.costPerClick || 0.1;
+
+//     if (listing.promotion.ppc.ppcBalance >= cost) {
+//       listing.promotion.ppc.ppcBalance = Number(
+//         (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
+//       );
+//       listing.promotion.ppc.executedClicks += 1;
+
+//       if (listing.promotion.ppc.ppcBalance < 0.01) {
+//         listing.promotion.ppc.isActive = false;
+//         listing.promotion.ppc.ppcBalance = 0;
+
+//         const now = new Date();
+//         const hasActiveBoost =
+//           listing.promotion.boost.isActive && listing.promotion.boost.expiresAt > now;
+
+//         if (!hasActiveBoost) {
+//           listing.isPromoted = false;
+//           listing.promotion.level = 0;
+//         }
+//       }
+
+//       await listing.save();
+
+//       await InteractionLog.create({ listingId: id, ip: userIp, type: 'ppc_click' });
+
+//       const today = new Date();
+//       today.setHours(0, 0, 0, 0);
+//       await Analytics.findOneAndUpdate(
+//         { listingId: id, date: today },
+//         {
+//           $inc: { clicks: 1 },
+//           $setOnInsert: { creatorId: listing.creatorId },
+//         },
+//         { upsert: true }
+//       );
+
+//       return res.status(200).json({
+//         success: true,
+//         balance: listing.promotion.ppc.ppcBalance,
+//         status: listing.isPromoted ? 'Still Promoted' : 'Back to Standard',
+//       });
+//     }
+
+//     res.status(400).json({ message: 'Insufficient PPC balance.' });
+//   } catch (error) {
+//     console.error('PPC Click Error:', error);
+//     res.status(500).json({ message: error.message });
+//   }
+// };
 
 export const getCreatorListingCount = async (req, res) => {
   try {

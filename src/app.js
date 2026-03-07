@@ -11,6 +11,8 @@ import creatorRoutes from './routes/creatorRoutes.js';
 import auditRoutes from './routes/auditRoutes.js';
 
 const app = express();
+app.set('trust proxy', 1);
+
 const __dirname = path.resolve();
 
 app.use(
