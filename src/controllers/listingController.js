@@ -9,6 +9,30 @@ import { calculateListingLevel } from '../utils/levelCalculator.js';
 import Analytics from '../models/Analytics.js';
 import InteractionLog from '../models/InteractionLog.js';
 
+const applyPromotionLogic = (listing) => {
+  const now = new Date();
+
+  // ১. স্কোর ক্যালকুলেশন
+  const boostScore =
+    listing.promotion?.boost?.isActive && listing.promotion?.boost?.expiresAt > now ? 50 : 0;
+  const ppcScore =
+    listing.promotion?.ppc?.isActive && listing.promotion?.ppc?.ppcBalance > 0 ? 30 : 0;
+  const engagementScore = (listing.favorites?.length || 0) * 2;
+
+  const totalScore = boostScore + ppcScore + engagementScore;
+
+  // ২. লেভেল সেট করা
+  if (totalScore >= 70) listing.promotion.level = 3;
+  else if (totalScore >= 30) listing.promotion.level = 2;
+  else if (totalScore >= 5) listing.promotion.level = 1;
+  else listing.promotion.level = 0;
+
+  // ৩. প্রমোটেড স্ট্যাটাস আপডেট
+  listing.isPromoted = boostScore > 0 || ppcScore > 0;
+
+  return listing;
+};
+
 export const getCategoriesAndTags = async (req, res) => {
   try {
     const [categories, regions] = await Promise.all([
@@ -324,9 +348,9 @@ export const getPublicListings = async (req, res) => {
 export const getListingById = async (req, res) => {
   try {
     const { id } = req.params;
-    const { deviceId } = req.query; // ফ্রন্টএন্ড থেকে কুয়েরি প্যারাম হিসেবে আসবে
-    const userAgent = req.headers['user-agent'] || 'unknown_browser';
+    const { deviceId } = req.query; // ফ্রন্টএন্ড থেকে আসা ফিঙ্গারপ্রিন্ট
     const userId = req.user?._id;
+    const userAgent = req.headers['user-agent'] || 'unknown';
 
     const listing = await Listing.findById(id)
       .populate('creatorId', 'firstName lastName username profile.profileImage')
@@ -335,36 +359,31 @@ export const getListingById = async (req, res) => {
 
     if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
 
-    // ১. ডুপ্লিকেট ভিউ চেক লজিক (deviceId অগ্রাধিকার পাবে)
-    const viewQuery = {
-      listingId: id,
-      type: 'view',
-    };
-
+    // ভিউ ডুপ্লিকেট চেক (deviceId অগ্রাধিকার পাবে)
+    const viewQuery = { listingId: id, type: 'view' };
     if (userId) {
       viewQuery.userId = userId;
     } else if (deviceId) {
-      viewQuery.deviceId = deviceId; // ফ্রন্টএন্ড থেকে আসা ইউনিক ফিঙ্গারপ্রিন্ট
+      viewQuery.deviceId = deviceId;
     } else {
-      viewQuery.userAgent = userAgent; // ব্যাকআপ হিসেবে
+      viewQuery.userAgent = userAgent;
     }
 
     const alreadyViewed = await InteractionLog.findOne(viewQuery);
 
     if (!alreadyViewed) {
-      // ২. ভিউ বাড়ানো
+      // অ্যাটমিক আপডেট (ভিউ বাড়ানো)
       await Listing.findByIdAndUpdate(id, { $inc: { views: 1 } });
 
-      // ৩. লগ তৈরি (deviceId সহ)
+      // লগ তৈরি (deviceId optional রাখা হয়েছে যাতে এরর না দেয়)
       await InteractionLog.create({
         listingId: id,
         userId: userId || null,
-        deviceId: deviceId || null,
-        userAgent: userAgent,
+        deviceId: deviceId || 'guest_device',
         type: 'view',
       });
 
-      // ৪. অ্যানালিটিক্স আপডেট
+      // অ্যানালিটিক্স আপডেট
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       await Analytics.findOneAndUpdate(
@@ -389,17 +408,17 @@ export const handlePpcClick = async (req, res) => {
     const { deviceId } = req.body;
     const userId = req.user?._id;
 
-    if (!deviceId) return res.status(400).json({ message: 'Security token missing.' });
+    if (!deviceId) return res.status(400).json({ message: 'Security token (deviceId) missing.' });
 
     const listing = await Listing.findById(id);
     if (!listing) return res.status(404).json({ message: 'Listing not found' });
 
-    // ১. পিপিইউ ক্যাম্পেইন অ্যাক্টিভ কি না চেক
+    // পিপিইউ একটিভ কি না চেক
     if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
-      return res.status(200).json({ success: true, message: 'Organic click.' });
+      return res.status(200).json({ success: true, message: 'Organic click recorded.' });
     }
 
-    // ২. ইউনিক চেক (Device ID বা User ID)
+    // ডুপ্লিকেট ক্লিক চেক
     const alreadyClicked = await InteractionLog.findOne({
       listingId: id,
       type: 'ppc_click',
@@ -412,29 +431,26 @@ export const handlePpcClick = async (req, res) => {
 
     const cost = listing.promotion.ppc.costPerClick || 0.1;
 
-    // ৩. ব্যালেন্স কাটা এবং র‍্যাঙ্কিং আপডেট
+    // ব্যালেন্স চেক এবং আপডেট
     if (listing.promotion.ppc.ppcBalance >= cost) {
-      listing.promotion.ppc.ppcBalance = Number(
-        (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
-      );
+      listing.promotion.ppc.ppcBalance = Number((listing.promotion.ppc.ppcBalance - cost).toFixed(4));
       listing.promotion.ppc.executedClicks += 1;
 
-      // ব্যালেন্স শেষ হয়ে গেলে পিপিইউ ফিল্ডগুলো রিসেট করা
+      // ব্যালেন্স শেষ হয়ে গেলে রিসেট
       if (listing.promotion.ppc.ppcBalance < 0.01) {
         listing.promotion.ppc.isActive = false;
         listing.promotion.ppc.ppcBalance = 0;
         listing.promotion.ppc.amountPaid = 0;
-        listing.promotion.ppc.totalClicks = 0; // আপনার রিকোয়েস্ট অনুযায়ী ফুল রিফ্রেশ
-        listing.promotion.ppc.executedClicks = 0; // নতুন ক্যাম্পেইনের জন্য রিসেট
+        listing.promotion.ppc.totalClicks = 0;
+        listing.promotion.ppc.executedClicks = 0;
       }
 
-      // --- গুরুত্বপূর্ণ: প্রমোশন লজিক পুনরায় অ্যাপ্লাই করা ---
-      // পিপিইউ ব্যালেন্স কমার সাথে সাথে লিস্টিংয়ের level এবং isPromoted স্ট্যাটাস আপডেট হবে
+      // র‍্যাঙ্কিং লেভেল আপডেট (হেল্পার ফাংশন কল)
       applyPromotionLogic(listing);
 
       await listing.save();
 
-      // ৪. লগ তৈরি
+      // লগ তৈরি
       await InteractionLog.create({
         listingId: id,
         userId: userId || null,
@@ -442,7 +458,7 @@ export const handlePpcClick = async (req, res) => {
         type: 'ppc_click',
       });
 
-      // ৫. অ্যানালিটিক্স আপডেট
+      // অ্যানালিটিক্স আপডেট
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       await Analytics.findOneAndUpdate(
@@ -457,11 +473,11 @@ export const handlePpcClick = async (req, res) => {
       return res.status(200).json({
         success: true,
         balance: listing.promotion.ppc.ppcBalance,
-        currentLevel: listing.promotion.level, // ফ্রন্টএন্ডে আপডেট লেভেল দেখানোর জন্য
+        currentLevel: listing.promotion.level,
       });
     }
 
-    res.status(400).json({ message: 'Insufficient balance.' });
+    res.status(400).json({ message: 'Insufficient PPC balance.' });
   } catch (error) {
     console.error('PPC Click Error:', error);
     res.status(500).json({ message: error.message });
