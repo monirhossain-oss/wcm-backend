@@ -24,7 +24,7 @@ router.get('/count/:creatorId', getCreatorListingCount);
 
 router.post('/favorite/:id', authMiddleware, toggleFavorite);
 
-router.post('/:id/click', handlePpcClick);
+router.post('/:id/click', optionalAuth, handlePpcClick);
 
 router.get('/my-listings', authMiddleware, authorizeRoles('creator'), getMyListings);
 router.post(
