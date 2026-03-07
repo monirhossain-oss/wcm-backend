@@ -185,7 +185,7 @@ export const getCreatorDashboardStats = async (req, res) => {
     const creatorId = req.user._id;
     const now = new Date();
 
-    // ১. টাইম রেঞ্জ সেটআপ
+    // 1. Time Range Setup
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setHours(0, 0, 0, 0);
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
@@ -199,16 +199,15 @@ export const getCreatorDashboardStats = async (req, res) => {
         status: 'completed',
         createdAt: { $gte: startOfMonth },
       }),
-      // সব এনালিটিক্স নিয়ে আসা (শুরু থেকে আজ পর্যন্ত) যাতে কার্ডে সঠিক টোটাল দেখানো যায়
       Analytics.find({ creatorId }).lean(),
       User.findById(creatorId).select('walletBalance'),
     ]);
 
-    // ২. কার্ডের জন্য একদম নির্ভুল লাইফটাইম টোটাল (Analytics থেকে সরাসরি)
+    // 2. Lifetime Totals from Analytics
     const lifetimeViews = allAnalytics.reduce((acc, curr) => acc + (curr.views || 0), 0);
     const lifetimeClicks = allAnalytics.reduce((acc, curr) => acc + (curr.clicks || 0), 0);
 
-    // ৩. গ্রাফ সিঙ্ক্রোনাইজেশন (শুধু গত ৭ দিনের জন্য ফিল্টার করা)
+    // 3. Graph Synchronization (Last 7 Days)
     const chartData = [];
     for (let i = 0; i < 7; i++) {
       const targetDate = new Date(sevenDaysAgo);
@@ -226,14 +225,26 @@ export const getCreatorDashboardStats = async (req, res) => {
       });
     }
 
-    // ৪. অন্যান্য স্ট্যাটাস
+    // 4. Monthly Spend Calculation
     const totalMonthlySpend = transactions.reduce(
       (acc, curr) => acc + (Number(curr.amountPaid) || 0),
       0
     );
 
+    // ✅ 5. Filter Active Promotions (Boost & PPC)
     const activeBoostsCount = listings.filter(
       (l) => l.promotion?.boost?.isActive && new Date(l.promotion.boost.expiresAt) > now
+    ).length;
+
+    const activePpcCount = listings.filter(
+      (l) => l.promotion?.ppc?.isActive && l.promotion.ppc.ppcBalance > 0
+    ).length;
+
+    // Optional: Count listings that have EITHER Boost or PPC active
+    const totalActivePromoted = listings.filter(
+      (l) =>
+        (l.promotion?.boost?.isActive && new Date(l.promotion.boost.expiresAt) > now) ||
+        (l.promotion?.ppc?.isActive && l.promotion.ppc.ppcBalance > 0)
     ).length;
 
     const statusCount = {
@@ -247,7 +258,9 @@ export const getCreatorDashboardStats = async (req, res) => {
       stats: {
         totalViews: lifetimeViews,
         totalMonthlySpend: totalMonthlySpend.toFixed(2),
-        activeBoostsCount,
+        activeBoostsCount, // Only Viral Boosts
+        activePpcCount, // Only PPC campaigns
+        totalActivePromoted, // Any active promotion
         totalClicks: lifetimeClicks,
         totalPpcBalance: userWallet?.walletBalance?.toFixed(2) || '0.00',
         totalListings: listings.length,
