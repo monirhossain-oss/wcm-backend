@@ -3,6 +3,7 @@ import {
   createCheckoutSession,
   generateInvoice,
   handleStripeWebhook,
+  purchasePromotion,
 } from '../controllers/PaymentController.js';
 import { authMiddleware } from '../middlewares/auth.js';
 
@@ -16,6 +17,8 @@ router.post(
   authMiddleware,
   createCheckoutSession
 );
+
+router.post('/purchase-promotion', authMiddleware, purchasePromotion);
 
 router.get('/creator/invoice/:id', authMiddleware, generateInvoice);
 
