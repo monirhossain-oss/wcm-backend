@@ -370,7 +370,12 @@ export const purchasePromotion = async (req, res) => {
     const listing = await Listing.findById(listingId).session(dbSession);
 
     if (!listing) throw new Error('Listing not found');
-    if (user.walletBalance < amountInEUR) throw new Error('Insufficient wallet balance.');
+    if (!user) throw new Error('User not found');
+
+    // ব্যালেন্স চেক
+    if (user.walletBalance < amountInEUR) {
+      throw new Error('Insufficient wallet balance.');
+    }
 
     // --- ডুপ্লিকেট প্রোমোশন চেক ---
     const now = new Date();
@@ -389,7 +394,7 @@ export const purchasePromotion = async (req, res) => {
       throw new Error('PPC balance already exists.');
     }
 
-    // ১. ওয়ালেট থেকে টাকা কাটা
+    // ১. ওয়ালেট থেকে টাকা কাটা
     user.walletBalance = Number((user.walletBalance - amountInEUR).toFixed(2));
     await user.save({ session: dbSession });
 
@@ -408,32 +413,57 @@ export const purchasePromotion = async (req, res) => {
       listing.promotion.ppc.costPerClick = Number((amountInEUR / totalClicks).toFixed(4));
     }
 
+    // প্রোমোশন লেভেল ক্যালকুলেশন লজিক কল করা
     applyPromotionLogic(listing, parseInt(days) || null);
     await listing.save({ session: dbSession });
 
-    // ৩. ইন্টারনাল ট্রানজেকশন লগ (ওয়ালেট পার্সেস)
-    await Transaction.create(
+    // ৩. ইন্টারনাল ট্রানজেকশন লগ তৈরি (সংশোধিত)
+    const transaction = await Transaction.create(
       [
         {
           creator: userId,
           listing: listingId,
-          amountInEUR: amountInEUR, // এখানে amountPaid এর বদলে Schema অনুযায়ী নাম দিন
-          amountPaid: amountInEUR, // যদি আপনার স্কিমাতে দুটোই থাকে তবে দুটোই দিন
+          amountInEUR: amountInEUR,
+          amountPaid: amountInEUR,
           currency: 'EUR',
+          fxRate: 1, // যেহেতু ওয়ালেট সরাসরি EUR তে কাজ করে
           packageType,
           status: 'completed',
-          invoiceNumber: `INT-${Date.now()}`,
-          vatAmount: 0,
+          // ⚠️ সমাধান: এটি ইউনিক না হলে ২য় বার ওয়ালেট পারচেজ এরর দিবে
+          stripeSessionId: `WALLET-PAY-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+          invoiceNumber: `INT-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          vatAmount: 0, // প্রোমোশন পারচেজে ভ্যাট ০ (টপ-আপের সময় ভ্যাট কাটা হয়)
         },
       ],
       { session: dbSession }
     );
 
+    // ৪. অডিট লগ তৈরি
+    await createAuditLog({
+      req,
+      user: userId,
+      action: 'PROMOTION_PURCHASED',
+      targetType: 'Transaction',
+      targetId: transaction[0]._id,
+      details: {
+        listingTitle: listing.title,
+        packageType: packageType,
+        paymentMethod: 'Wallet',
+        amountInEUR: `${amountInEUR} EUR`,
+        newBalance: `${user.walletBalance} EUR`,
+      },
+    });
+
     await dbSession.commitTransaction();
-    res.status(200).json({ success: true, newBalance: user.walletBalance });
+    res.status(200).json({
+      success: true,
+      message: `${packageType.toUpperCase()} activated successfully!`,
+      newBalance: user.walletBalance,
+    });
   } catch (error) {
     await dbSession.abortTransaction();
-    res.status(400).json({ message: error.message });
+    console.error('Promotion Purchase Error:', error.message);
+    res.status(400).json({ success: false, message: error.message });
   } finally {
     dbSession.endSession();
   }
