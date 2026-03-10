@@ -7,6 +7,7 @@ import fs from 'fs';
 import ExcelJS from 'exceljs';
 import Transaction from '../models/Transaction.js';
 import Analytics from '../models/Analytics.js';
+import { SystemSettings } from '../models/SystemSettings.js';
 
 export const createTag = async (req, res) => {
   try {
@@ -630,83 +631,61 @@ export const getPromotedListings = async (req, res) => {
 export const getAdminStats = async (req, res) => {
   try {
     const now = new Date();
+    const cacheKey = 'admin_global_stats';
+
+    // ১. টাইম রেঞ্জ (গত ৭ দিন)
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setHours(0, 0, 0, 0);
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-    const twentyFourHoursAgo = new Date();
-    twentyFourHoursAgo.setHours(now.getHours() - 24);
-
+    // ২. ডেটাবেস কল
     const [
       totalCreators,
-      totalListings,
       pendingListings,
       pendingRequests,
-      allTransactions,
       recentPaymentsCount,
-      activePpcCount,
-      activeBoostCount,
-      globalAnalytics, // Analytics মডেল থেকে ডাটা
+      allTransactions,
+      promotedListings,
+      globalAnalytics,
     ] = await Promise.all([
       User.countDocuments({ role: 'creator' }),
-      Listing.countDocuments(),
       Listing.countDocuments({ status: 'pending' }),
-      User.countDocuments({
-        role: 'user',
-        'creatorRequest.isApplied': true,
-        'creatorRequest.status': 'pending',
-      }),
+      User.countDocuments({ 'creatorRequest.isApplied': true, 'creatorRequest.status': 'pending' }),
+      Transaction.countDocuments({ status: 'completed', createdAt: { $gte: twentyFourHoursAgo } }),
       Transaction.find({ status: 'completed' }).lean(),
-      Transaction.countDocuments({
-        status: 'completed',
-        createdAt: { $gte: twentyFourHoursAgo },
-      }),
-      Listing.countDocuments({
-        'promotion.ppc.isActive': true,
-        'promotion.ppc.ppcBalance': { $gt: 0 },
-      }),
-      Listing.countDocuments({
-        'promotion.boost.isActive': true,
-        'promotion.boost.expiresAt': { $gt: now },
-      }),
-      // ✅ নির্ভুলতার জন্য Analytics মডেল থেকে ভিউ এবং ক্লিকের সামারি আনা
+      Listing.find({ 'isPromoted': true }).lean(),
       Analytics.aggregate([
-        {
-          $group: {
-            _id: null,
-            totalViews: { $sum: '$views' },
-            totalClicks: { $sum: '$clicks' },
-          },
-        },
+        { $group: { _id: null, totalViews: { $sum: '$views' }, totalClicks: { $sum: '$clicks' } } },
       ]),
     ]);
 
-    // ১. ফিন্যান্সিয়াল ক্যালকুলেশন
-    let totalRevenue = 0;
+    // ৩. ফিন্যান্সিয়াল ক্যালকুলেশন (Fixing the Mismatch)
+    let totalPaidRevenue = 0; // ইউজাররা আসলে কত টাকা পেমেন্ট করেছে
     let totalVat = 0;
-    let totalStripeFees = 0;
+    let activePromotions = 0;
 
     allTransactions.forEach((t) => {
-      const amount = Number(t.amountPaid) || 0;
-      const vat = Number(t.vatAmount) || 0;
-      totalRevenue += amount;
-      totalVat += vat;
-      if (amount > 0) {
-        // Stripe Fee: 2.9% + 0.30 EUR (Standard)
-        totalStripeFees += amount * 0.029 + 0.3;
+      totalPaidRevenue += Number(t.amountPaid) || 0;
+      totalVat += Number(t.vatAmount) || 0;
+    });
+
+    // প্রোমোশন কাউন্ট চেক
+    promotedListings.forEach((l) => {
+      if (
+        (l.promotion?.boost?.isActive && new Date(l.promotion.boost.expiresAt) > now) ||
+        (l.promotion?.ppc?.isActive && l.promotion.ppc.ppcBalance > 0)
+      ) {
+        activePromotions++;
       }
     });
 
-    const netProfit = totalRevenue - totalVat - totalStripeFees;
+    const stripeFees = totalPaidRevenue * 0.029 + allTransactions.length * 0.3;
+    const netProfit = totalPaidRevenue - totalVat - stripeFees;
 
-    // ২. চার্টের জন্য গত ৭ দিনের ফিন্যান্সিয়াল ডাটা
-    const dailyFinance = await Transaction.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: sevenDaysAgo },
-          status: 'completed',
-        },
-      },
+    // ৪. চার্ট ডেটা (Revenue Flow)
+    const dailyRevenueData = await Transaction.aggregate([
+      { $match: { status: 'completed', createdAt: { $gte: sevenDaysAgo } } },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
@@ -718,49 +697,45 @@ export const getAdminStats = async (req, res) => {
       { $sort: { _id: 1 } },
     ]);
 
-    // ৩. গত ৭ দিনের ভিউ/ক্লিক অ্যানালিটিক্স (গ্রাফের সাথে মিল রাখার জন্য)
-    const dailyStats = await Analytics.aggregate([
-      { $match: { date: { $gte: sevenDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
-          views: { $sum: '$views' },
-          clicks: { $sum: '$clicks' },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+    const revenueFlow = dailyRevenueData.map((d) => {
+      const dailyRev = d.revenue || 0;
+      const dailyFee = dailyRev * 0.029 + d.count * 0.3;
+      const dailyProfit = dailyRev - (d.vat || 0) - dailyFee;
+      return {
+        date: d._id,
+        revenue: Number(dailyRev.toFixed(2)),
+        profit: Number(Math.max(0, dailyProfit).toFixed(2)),
+      };
+    });
 
-    res.status(200).json({
-      success: true,
+    // ৫. রেসপন্স অবজেক্ট
+    const finalData = {
       cards: {
-        totalRevenue: totalRevenue.toFixed(2),
+        totalRevenue: totalPaidRevenue.toFixed(2), // এখন এটি আর ০.০০ দেখাবে না
         totalVat: totalVat.toFixed(2),
-        stripeFees: totalStripeFees.toFixed(2),
+        stripeFees: stripeFees.toFixed(2),
         netProfit: netProfit.toFixed(2),
-        // ✅ এখন এটি সরাসরি Analytics মডেলের সাথে সিঙ্কড
         totalViews: globalAnalytics[0]?.totalViews || 0,
         totalClicks: globalAnalytics[0]?.totalClicks || 0,
+        activePromotions,
         recentPayments: recentPaymentsCount,
-        activePromotions: activePpcCount + activeBoostCount,
         pendingListings,
         pendingCreatorRequests: pendingRequests,
         totalCreators,
       },
       charts: {
-        revenueFlow: dailyFinance.map((d) => ({
-          date: d._id,
-          revenue: Number(d.revenue.toFixed(2)),
-          profit: Number((d.revenue - d.vat - (d.revenue * 0.029 + d.count * 0.3)).toFixed(2)),
-        })),
-        // অতিরিক্ত ডাটা যা আপনি গ্রাফে দেখাতে পারেন
-        performanceFlow: dailyStats.map((s) => ({
-          date: s._id,
-          views: s.views,
-          clicks: s.clicks,
-        })),
+        revenueFlow,
       },
-    });
+    };
+
+    // ৬. সিস্টেম সেটিংস এ সেভ (Cache)
+    await SystemSettings.findOneAndUpdate(
+      { key: cacheKey },
+      { data: finalData, lastUpdated: now },
+      { upsert: true }
+    );
+
+    res.status(200).json({ success: true, ...finalData });
   } catch (error) {
     console.error('Admin Stats Error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
