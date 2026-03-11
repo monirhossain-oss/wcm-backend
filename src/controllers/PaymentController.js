@@ -10,18 +10,289 @@ import { createAuditLog } from '../utils/logger.js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+// const getExchangeRate = async (fromCurrency, toCurrency) => {
+//   try {
+//     const from = fromCurrency.toLowerCase();
+//     const to = toCurrency.toLowerCase();
+//     if (from === to) return 1;
+//     const response = await axios.get(
+//       `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_RATE_API_KEY}/pair/${from}/${to}`
+//     );
+//     return response.data?.conversion_rate || 1;
+//   } catch (error) {
+//     return 1;
+//   }
+// };
+
+// export const createCheckoutSession = async (req, res) => {
+//   try {
+//     const { amount, currency } = req.body; // শুধুমাত্র কত টাকা অ্যাড করবে
+
+//     if (!amount || amount < 5)
+//       return res.status(400).json({ message: 'Minimum top-up is 5 units.' });
+
+//     const paymentCurrency = currency || 'eur';
+
+//     const session = await stripe.checkout.sessions.create({
+//       payment_method_types: ['card'],
+//       line_items: [
+//         {
+//           price_data: {
+//             currency: paymentCurrency,
+//             product_data: {
+//               name: `Wallet Top-up: ${req.user.firstName}`,
+//               description: `Adding funds to your creator wallet`,
+//             },
+//             unit_amount: Math.round(Number(amount) * 100),
+//           },
+//           quantity: 1,
+//         },
+//       ],
+//       mode: 'payment',
+//       success_url: `${process.env.CLIENT_URL}/creator/promotions?success=true`,
+//       cancel_url: `${process.env.CLIENT_URL}/creator/promotions?canceled=true`,
+//       metadata: {
+//         creatorId: req.user._id.toString(),
+//         type: 'wallet_topup',
+//       },
+//     });
+
+//     res.status(200).json({ url: session.url });
+//   } catch (error) {
+//     res.status(500).json({ message: 'Stripe failed. Try again.' });
+//   }
+// };
+
+// export const handleStripeWebhook = async (req, res) => {
+//   const sig = req.headers['stripe-signature'];
+//   let event;
+
+//   try {
+//     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+//   } catch (err) {
+//     return res.status(400).send(`Webhook Error: ${err.message}`);
+//   }
+
+//   if (event.type === 'checkout.session.completed') {
+//     const session = event.data.object;
+//     const { creatorId } = session.metadata;
+
+//     const dbSession = await mongoose.startSession();
+//     dbSession.startTransaction();
+
+//     try {
+//       // ১. ডাইনামিক ভ্যাট রেট নির্ধারণ (যেমন ১৯ বা অন্য কিছু)
+//       // আপনি চাইলে ডাটাবেস থেকে কোনো সেটিংস মডেল থেকেও এটি আনতে পারেন
+//       const VAT_PERCENT = Number(process.env.GLOBAL_VAT_RATE) || 19;
+
+//       const amountPaid = session.amount_total / 100; // মোট টাকা (ভ্যাটসহ)
+//       const fxRate = await getExchangeRate(session.currency, 'EUR');
+//       const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
+
+//       /** * ২. ডাইনামিক ভ্যাট ক্যালকুলেশন
+//        * সূত্র: VAT = Total - (Total / (1 + (VAT% / 100)))
+//        * যদি ১৯% হয়: amountPaid - (amountPaid / 1.19)
+//        */
+//       const divisor = 1 + VAT_PERCENT / 100;
+//       const vatAmount = Number((amountPaid - amountPaid / divisor).toFixed(2));
+//       const amountWithoutVat = Number((amountPaid / divisor).toFixed(2));
+
+//       // ৩. ইউজারের ওয়ালেট আপডেট
+//       // নোট: আপনি কি ভ্যাটসহ টাকা ওয়ালেটে দিবেন নাকি ভ্যাট বাদে?
+//       // সাধারণত ভ্যাট বাদে টাকা ওয়ালেটে যোগ হয়। নিচে ভ্যাট বাদে (amountWithoutVat) কনভার্ট করে EUR এ দেওয়া হলো।
+//       const walletCreditInEUR = Number((amountWithoutVat * fxRate).toFixed(2));
+
+//       await User.findByIdAndUpdate(
+//         creatorId,
+//         {
+//           $inc: { walletBalance: walletCreditInEUR },
+//         },
+//         { session: dbSession }
+//       );
+
+//       // ৪. ট্রানজেকশন রেকর্ড (ইনভয়েসের জন্য)
+//       await Transaction.create(
+//         [
+//           {
+//             creator: creatorId,
+//             stripeSessionId: session.id,
+//             amountPaid, // কাস্টমার যা পে করেছে (ভ্যাটসহ)
+//             currency: session.currency,
+//             fxRate,
+//             amountInEUR: walletCreditInEUR, // ওয়ালেটে যা গেল
+//             packageType: 'wallet_topup',
+//             status: 'completed',
+//             vatRate: VAT_PERCENT, // কত পারসেন্ট ভ্যাট কাটা হলো তা সেভ রাখা ভালো
+//             vatAmount: vatAmount, // কত টাকা ভ্যাট কাটা হলো
+//             invoiceNumber: `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+//           },
+//         ],
+//         { session: dbSession }
+//       );
+
+//       await dbSession.commitTransaction();
+//       console.log(`Successfully processed top-up for: ${creatorId}`);
+//     } catch (error) {
+//       await dbSession.abortTransaction();
+//       console.error('Webhook Transaction Error:', error);
+//     } finally {
+//       dbSession.endSession();
+//     }
+//   }
+//   res.json({ received: true });
+// };
+
 const getExchangeRate = async (fromCurrency, toCurrency) => {
   try {
     const from = fromCurrency.toLowerCase();
     const to = toCurrency.toLowerCase();
     if (from === to) return 1;
+
     const response = await axios.get(
       `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_RATE_API_KEY}/pair/${from}/${to}`
     );
     return response.data?.conversion_rate || 1;
   } catch (error) {
+    console.error('Exchange Rate Error:', error);
     return 1;
   }
+};
+
+export const createCheckoutSession = async (req, res) => {
+  try {
+    const { amount, currency } = req.body;
+
+    if (!amount || amount < 5)
+      return res.status(400).json({ message: 'Minimum top-up is 5 units.' });
+
+    const paymentCurrency = (currency || 'eur').toLowerCase();
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: paymentCurrency,
+            product_data: {
+              name: `Wallet Top-up: ${req.user.firstName}`,
+              description: `Adding funds to your creator wallet`,
+            },
+            unit_amount: Math.round(Number(amount) * 100),
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      success_url: `${process.env.CLIENT_URL}/creator/promotions?success=true`,
+      cancel_url: `${process.env.CLIENT_URL}/creator/promotions?canceled=true`,
+      metadata: {
+        creatorId: req.user._id.toString(),
+        type: 'wallet_topup',
+        originalCurrency: paymentCurrency, 
+      },
+    });
+
+    res.status(200).json({ url: session.url });
+  } catch (error) {
+    res.status(500).json({ message: 'Stripe failed. Try again.' });
+  }
+};
+
+export const handleStripeWebhook = async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const { creatorId, originalCurrency } = session.metadata;
+
+    const dbSession = await mongoose.startSession();
+    dbSession.startTransaction();
+
+    try {
+      const amountPaid = session.amount_total / 100; // কাস্টমার যা পে করেছে [cite: 8]
+      let walletCreditInEUR = 0;
+      let finalVatAmount = 0;
+      let appliedVatRate = 0;
+
+      // ১. কারেন্সি ভিত্তিক ভ্যাট এবং কনভার্সন লজিক
+      if (originalCurrency === 'eur') {
+        // EUR পেমেন্ট হলে কোনো ভ্যাট নেই
+        walletCreditInEUR = amountPaid;
+        appliedVatRate = 0;
+        finalVatAmount = 0;
+      } else {
+        // অন্য কারেন্সি (যেমন USD) হলে এক্সচেঞ্জ রেট এবং ভ্যাট ক্যালকুলেশন [cite: 8, 9]
+        const fxRate = await getExchangeRate(originalCurrency, 'EUR');
+
+        // আপনার আগের লজিক অনুযায়ী ভ্যাট ক্যালকুলেশন (যদি USD তে ভ্যাট রাখতে চান) [cite: 8]
+        // যদি USD তেও ভ্যাট না চান তবে VAT_PERCENT = 0 করে দিন
+        const VAT_PERCENT = Number(process.env.GLOBAL_VAT_RATE) || 0;
+        const divisor = 1 + VAT_PERCENT / 100;
+
+        const amountWithoutVat = amountPaid / divisor;
+        finalVatAmount = Number((amountPaid - amountWithoutVat).toFixed(2));
+
+        // EUR এ কনভার্ট করে ওয়ালেটে ক্রেডিট
+        walletCreditInEUR = Number((amountWithoutVat * fxRate).toFixed(2));
+      }
+
+      // ২. ইউজারের ওয়ালেট আপডেট
+      const updatedUser = await User.findByIdAndUpdate(
+        creatorId,
+        { $inc: { walletBalance: walletCreditInEUR } },
+        { session: dbSession, new: true }
+      );
+
+      // ৩. ট্রানজেকশন রেকর্ড তৈরি [cite: 2, 8]
+      const transaction = await Transaction.create(
+        [
+          {
+            creator: creatorId,
+            stripeSessionId: session.id,
+            amountPaid,
+            currency: originalCurrency.toUpperCase(),
+            amountInEUR: walletCreditInEUR,
+            packageType: 'wallet_topup',
+            status: 'completed',
+            vatRate: appliedVatRate,
+            vatAmount: finalVatAmount,
+            invoiceNumber: `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          },
+        ],
+        { session: dbSession }
+      );
+
+      // ৪. অডিট লগ তৈরি
+      await createAuditLog({
+        req,
+        user: creatorId,
+        action: 'WALLET_TOPUP_SUCCESS',
+        targetType: 'Transaction',
+        targetId: transaction[0]._id,
+        details: {
+          paidAmount: `${amountPaid} ${originalCurrency.toUpperCase()}`,
+          creditedEUR: `${walletCreditInEUR} EUR`,
+          newBalance: `${updatedUser.walletBalance} EUR`,
+        },
+      });
+
+      await dbSession.commitTransaction();
+      console.log(`Successfully credited ${walletCreditInEUR} EUR to: ${creatorId}`);
+    } catch (error) {
+      await dbSession.abortTransaction();
+      console.error('Webhook processing failed:', error);
+    } finally {
+      dbSession.endSession();
+    }
+  }
+  res.json({ received: true });
 };
 
 const applyPromotionLogic = (listing, daysInput = null) => {
@@ -50,45 +321,6 @@ const applyPromotionLogic = (listing, daysInput = null) => {
 
   if (!listing.isPromoted) listing.promotion.level = 0;
   return listing;
-};
-
-export const createCheckoutSession = async (req, res) => {
-  try {
-    const { amount, currency } = req.body; // শুধুমাত্র কত টাকা অ্যাড করবে
-
-    if (!amount || amount < 5)
-      return res.status(400).json({ message: 'Minimum top-up is 5 units.' });
-
-    const paymentCurrency = currency || 'eur';
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: paymentCurrency,
-            product_data: {
-              name: `Wallet Top-up: ${req.user.firstName}`,
-              description: `Adding funds to your creator wallet`,
-            },
-            unit_amount: Math.round(Number(amount) * 100),
-          },
-          quantity: 1,
-        },
-      ],
-      mode: 'payment',
-      success_url: `${process.env.CLIENT_URL}/creator/promotions?success=true`,
-      cancel_url: `${process.env.CLIENT_URL}/creator/promotions?canceled=true`,
-      metadata: {
-        creatorId: req.user._id.toString(),
-        type: 'wallet_topup',
-      },
-    });
-
-    res.status(200).json({ url: session.url });
-  } catch (error) {
-    res.status(500).json({ message: 'Stripe failed. Try again.' });
-  }
 };
 
 export const purchasePromotion = async (req, res) => {
@@ -191,85 +423,6 @@ export const purchasePromotion = async (req, res) => {
   } finally {
     dbSession.endSession();
   }
-};
-
-export const handleStripeWebhook = async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    const { creatorId } = session.metadata;
-
-    const dbSession = await mongoose.startSession();
-    dbSession.startTransaction();
-
-    try {
-      // ১. ডাইনামিক ভ্যাট রেট নির্ধারণ (যেমন ১৯ বা অন্য কিছু)
-      // আপনি চাইলে ডাটাবেস থেকে কোনো সেটিংস মডেল থেকেও এটি আনতে পারেন
-      const VAT_PERCENT = Number(process.env.GLOBAL_VAT_RATE) || 19;
-
-      const amountPaid = session.amount_total / 100; // মোট টাকা (ভ্যাটসহ)
-      const fxRate = await getExchangeRate(session.currency, 'EUR');
-      const amountInEUR = Number((amountPaid * fxRate).toFixed(2));
-
-      /** * ২. ডাইনামিক ভ্যাট ক্যালকুলেশন
-       * সূত্র: VAT = Total - (Total / (1 + (VAT% / 100)))
-       * যদি ১৯% হয়: amountPaid - (amountPaid / 1.19)
-       */
-      const divisor = 1 + VAT_PERCENT / 100;
-      const vatAmount = Number((amountPaid - amountPaid / divisor).toFixed(2));
-      const amountWithoutVat = Number((amountPaid / divisor).toFixed(2));
-
-      // ৩. ইউজারের ওয়ালেট আপডেট
-      // নোট: আপনি কি ভ্যাটসহ টাকা ওয়ালেটে দিবেন নাকি ভ্যাট বাদে?
-      // সাধারণত ভ্যাট বাদে টাকা ওয়ালেটে যোগ হয়। নিচে ভ্যাট বাদে (amountWithoutVat) কনভার্ট করে EUR এ দেওয়া হলো।
-      const walletCreditInEUR = Number((amountWithoutVat * fxRate).toFixed(2));
-
-      await User.findByIdAndUpdate(
-        creatorId,
-        {
-          $inc: { walletBalance: walletCreditInEUR },
-        },
-        { session: dbSession }
-      );
-
-      // ৪. ট্রানজেকশন রেকর্ড (ইনভয়েসের জন্য)
-      await Transaction.create(
-        [
-          {
-            creator: creatorId,
-            stripeSessionId: session.id,
-            amountPaid, // কাস্টমার যা পে করেছে (ভ্যাটসহ)
-            currency: session.currency,
-            fxRate,
-            amountInEUR: walletCreditInEUR, // ওয়ালেটে যা গেল
-            packageType: 'wallet_topup',
-            status: 'completed',
-            vatRate: VAT_PERCENT, // কত পারসেন্ট ভ্যাট কাটা হলো তা সেভ রাখা ভালো
-            vatAmount: vatAmount, // কত টাকা ভ্যাট কাটা হলো
-            invoiceNumber: `INV-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-          },
-        ],
-        { session: dbSession }
-      );
-
-      await dbSession.commitTransaction();
-      console.log(`Successfully processed top-up for: ${creatorId}`);
-    } catch (error) {
-      await dbSession.abortTransaction();
-      console.error('Webhook Transaction Error:', error);
-    } finally {
-      dbSession.endSession();
-    }
-  }
-  res.json({ received: true });
 };
 
 export const cancelPromotion = async (req, res) => {

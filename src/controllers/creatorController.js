@@ -56,13 +56,84 @@ export const getMyTransactions = async (req, res) => {
   }
 };
 
+// export const getPromotionAnalytics = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const userId = req.user._id;
+
+//     const listing = await Listing.findOne({ _id: id, creatorId: userId })
+//       .select('title promotion views isPromoted image')
+//       .lean();
+
+//     if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
+
+//     const ppc = listing.promotion?.ppc || {};
+//     const boost = listing.promotion?.boost || {};
+//     const now = new Date();
+
+//     // --- PPC Calculation ---
+//     const totalPurchased = Number(ppc.totalClicks) || 0;
+//     const executed = Number(ppc.executedClicks) || 0;
+//     const remaining = Math.max(0, totalPurchased - executed);
+//     const consumptionRate =
+//       totalPurchased > 0 ? Number(((executed / totalPurchased) * 100).toFixed(1)) : 0;
+
+//     // --- Boost Calculation (Real-time Focus) ---
+//     let daysRemaining = 0;
+//     let hoursRemaining = 0;
+//     let isExpiringSoon = false;
+
+//     if (boost.isActive && boost.expiresAt) {
+//       const expiry = new Date(boost.expiresAt);
+//       const diffMs = expiry - now;
+
+//       if (diffMs > 0) {
+//         daysRemaining = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+//         hoursRemaining = Math.floor(diffMs / (1000 * 60 * 60));
+//         // যদি ২৪ ঘণ্টার কম থাকে
+//         if (hoursRemaining < 24) isExpiringSoon = true;
+//       }
+//     }
+
+//     res.status(200).json({
+//       success: true,
+//       data: {
+//         title: listing.title,
+//         image: listing.image,
+//         isPromoted: !!listing.isPromoted,
+//         level: listing.promotion?.level || 0,
+//         views: listing.views || 0,
+//         ppc: {
+//           isActive: !!(ppc.isActive && ppc.ppcBalance > 0),
+//           balance: Number(ppc.ppcBalance || 0).toFixed(2),
+//           costPerClick: Number(ppc.costPerClick || 0.1).toFixed(2),
+//           totalPurchased,
+//           clicksUsed: executed,
+//           clicksRemaining: remaining,
+//           consumptionRate: Math.min(100, consumptionRate),
+//         },
+//         boost: {
+//           isActive: !!(boost.isActive && hoursRemaining > 0),
+//           expiresAt: boost.expiresAt,
+//           daysRemaining,
+//           hoursRemaining,
+//           isExpiringSoon,
+//         },
+//       },
+//     });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: 'Server error' });
+//   }
+// };
+
 export const getPromotionAnalytics = async (req, res) => {
   try {
     const { id } = req.params;
+    const { range } = req.query; // 'today', 'week', 'month'
     const userId = req.user._id;
 
     const listing = await Listing.findOne({ _id: id, creatorId: userId })
-      .select('title promotion views isPromoted image')
+      .select('title promotion views isPromoted image createdAt')
       .lean();
 
     if (!listing) return res.status(404).json({ success: false, message: 'Listing not found' });
@@ -71,14 +142,35 @@ export const getPromotionAnalytics = async (req, res) => {
     const boost = listing.promotion?.boost || {};
     const now = new Date();
 
-    // --- PPC Calculation ---
+    // --- ১. টাইম ফিল্টার সেটআপ ---
+    let startDate = new Date(0); // Default: All time
+    if (range === 'today') {
+      startDate = new Date(now.setHours(0, 0, 0, 0));
+    } else if (range === 'week') {
+      startDate = new Date(now.setDate(now.getDate() - 7));
+    } else if (range === 'month') {
+      startDate = new Date(now.setMonth(now.getMonth() - 1));
+    }
+
+    // --- ২. স্পেসিফিক পিরিয়ডের ট্রানজেকশন ডাটা (Spending Analysis) ---
+    // এই লিস্টিংটির জন্য নির্দিষ্ট সময়ে কত খরচ হয়েছে তা বের করা
+    const transactions = await Transaction.find({
+      listing: id,
+      creator: userId,
+      createdAt: { $gte: startDate },
+      packageType: { $in: ['boost', 'ppc'] },
+    }).select('amountPaid packageType createdAt');
+
+    const totalSpentInPeriod = transactions.reduce((acc, curr) => acc + (curr.amountPaid || 0), 0);
+
+    // --- ৩. PPC Calculation (Existing + Extra) ---
     const totalPurchased = Number(ppc.totalClicks) || 0;
     const executed = Number(ppc.executedClicks) || 0;
     const remaining = Math.max(0, totalPurchased - executed);
     const consumptionRate =
       totalPurchased > 0 ? Number(((executed / totalPurchased) * 100).toFixed(1)) : 0;
 
-    // --- Boost Calculation (Real-time Focus) ---
+    // --- ৪. Boost Calculation (Real-time Focus) ---
     let daysRemaining = 0;
     let hoursRemaining = 0;
     let isExpiringSoon = false;
@@ -90,21 +182,28 @@ export const getPromotionAnalytics = async (req, res) => {
       if (diffMs > 0) {
         daysRemaining = Math.floor(diffMs / (1000 * 60 * 60 * 24));
         hoursRemaining = Math.floor(diffMs / (1000 * 60 * 60));
-        // যদি ২৪ ঘণ্টার কম থাকে
         if (hoursRemaining < 24) isExpiringSoon = true;
       }
     }
 
+    // --- ৫. Response Data Structure ---
     res.status(200).json({
       success: true,
       data: {
-        title: listing.title,
-        image: listing.image,
-        isPromoted: !!listing.isPromoted,
-        level: listing.promotion?.level || 0,
-        views: listing.views || 0,
+        header: {
+          title: listing.title,
+          image: listing.image,
+          isPromoted: !!listing.isPromoted,
+          level: listing.promotion?.level || 0,
+          totalViews: listing.views || 0,
+        },
+        periodStats: {
+          filterApplied: range || 'all_time',
+          spendingInPeriod: totalSpentInPeriod.toFixed(2),
+          transactionsCount: transactions.length,
+        },
         ppc: {
-          isActive: !!(ppc.isActive && ppc.ppcBalance > 0),
+          isActive: !!(ppc.isActive && (ppc.ppcBalance || 0) > 0),
           balance: Number(ppc.ppcBalance || 0).toFixed(2),
           costPerClick: Number(ppc.costPerClick || 0.1).toFixed(2),
           totalPurchased,
@@ -113,15 +212,17 @@ export const getPromotionAnalytics = async (req, res) => {
           consumptionRate: Math.min(100, consumptionRate),
         },
         boost: {
-          isActive: !!(boost.isActive && hoursRemaining > 0),
+          isActive: !!(boost.isActive && new Date(boost.expiresAt) > new Date()),
           expiresAt: boost.expiresAt,
           daysRemaining,
           hoursRemaining,
           isExpiringSoon,
+          amountInvested: Number(boost.amountPaid || 0).toFixed(2),
         },
       },
     });
   } catch (error) {
+    console.error('Analytics Error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
