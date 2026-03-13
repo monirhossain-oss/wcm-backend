@@ -7,6 +7,7 @@ import fs from 'fs';
 import ExcelJS from 'exceljs';
 import Transaction from '../models/Transaction.js';
 import Analytics from '../models/Analytics.js';
+import { SystemSettings } from '../models/SystemSettings.js';
 
 export const createTag = async (req, res) => {
   try {
@@ -144,24 +145,124 @@ export const deleteTag = async (req, res) => {
 
 export const getAllUsers = async (req, res) => {
   try {
-    const users = await User.find().select('-password').sort({ createdAt: -1 });
-    res.status(200).json(users);
+    const { search = '', role = 'all', timeRange = 'all', page = 1, limit = 20 } = req.query;
+
+    let query = {};
+    const now = new Date();
+
+    // ১. সার্চ লজিক (Name, Email বা Username দিয়ে)
+    if (search) {
+      query.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { username: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    // ২. রোল ফিল্টারিং (Admin, Creator, User ইত্যাদি)
+    if (role !== 'all') {
+      query.role = role;
+    }
+
+    // ৩. টাইম রেঞ্জ ফিল্টারিং (নতুন ইউজার কবে জয়েন করেছে)
+    if (timeRange !== 'all') {
+      let startDate = new Date();
+      if (timeRange === 'today') {
+        startDate.setHours(0, 0, 0, 0);
+      } else if (timeRange === 'week') {
+        startDate.setDate(now.getDate() - 7);
+      } else if (timeRange === 'month') {
+        startDate.setMonth(now.getMonth() - 1);
+      }
+      query.createdAt = { $gte: startDate };
+    }
+
+    // ৪. ডাটাবেস থেকে ডাটা আনা (প্যাজিনেশনসহ)
+    const users = await User.find(query)
+      .select('-password') // পাসওয়ার্ড বাদ দিয়ে
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .lean();
+
+    // ৫. টোটাল কাউন্ট (ফ্রন্টএন্ড প্যাজিনেশনের জন্য)
+    const totalUsers = await User.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      users,
+      pagination: {
+        totalUsers,
+        totalPages: Math.ceil(totalUsers / limit),
+        currentPage: Number(page),
+      },
+    });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Get All Users Error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
 export const getCreatorRequests = async (req, res) => {
   try {
-    const requests = await User.find({
+    const { search = '', timeRange = 'all', page = 1, limit = 10 } = req.query;
+
+    // ১. বেসিক কুয়েরি (যারা ক্রিয়েটর হতে অ্যাপ্লাই করেছে এবং পেন্ডিং আছে)
+    let query = {
       'creatorRequest.isApplied': true,
       'creatorRequest.status': 'pending',
       role: 'user',
-    }).select('-password');
+    };
 
-    res.status(200).json(requests);
+    const now = new Date();
+
+    // ২. সার্চ লজিক (নাম বা ইমেইল দিয়ে খোঁজার জন্য)
+    if (search) {
+      query.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    // ৩. টাইম ফিল্টার (কবে অ্যাপ্লাই করেছে)
+    // নোট: আপনার মডেলে যদি appliedAt না থাকে তবে updatedAt ব্যবহার করা যেতে পারে
+    if (timeRange !== 'all') {
+      let startDate = new Date();
+      if (timeRange === 'today') {
+        startDate.setHours(0, 0, 0, 0);
+      } else if (timeRange === 'week') {
+        startDate.setDate(now.getDate() - 7);
+      } else if (timeRange === 'month') {
+        startDate.setMonth(now.getMonth() - 1);
+      }
+      query.updatedAt = { $gte: startDate };
+    }
+
+    // ৪. ডাটাবেস থেকে ডাটা আনা (প্যাজিনেশনসহ)
+    const requests = await User.find(query)
+      .select('-password')
+      .sort({ updatedAt: -1 }) // লেটেস্ট রিকোয়েস্ট আগে দেখাবে
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .lean();
+
+    // ৫. টোটাল রিকোয়েস্ট কাউন্ট
+    const totalRequests = await User.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      requests,
+      pagination: {
+        totalRequests,
+        totalPages: Math.ceil(totalRequests / limit),
+        currentPage: Number(page),
+      },
+    });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Get Creator Requests Error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -321,10 +422,25 @@ export const updateListingStatus = async (req, res) => {
   }
 };
 
+export const updateCategoryOrder = async (req, res) => {
+  try {
+    const { categories } = req.body;
+
+    const updatePromises = categories.map((cat, index) => {
+      return Category.findByIdAndUpdate(cat._id, { order: index });
+    });
+
+    await Promise.all(updatePromises);
+
+    res.status(200).json({ message: 'Order updated successfully' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const exportUsersExcel = async (req, res) => {
   try {
     const userCursor = User.find({}).select('-password').cursor();
-
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('System All Users');
 
@@ -348,7 +464,6 @@ export const exportUsersExcel = async (req, res) => {
     };
 
     let count = 0;
-
     for (let user = await userCursor.next(); user != null; user = await userCursor.next()) {
       const profile = user.profile || {};
       const creatorRequest = user.creatorRequest || {};
@@ -369,8 +484,6 @@ export const exportUsersExcel = async (req, res) => {
       count++;
     }
 
-    console.log(`Exported ${count} users to Excel.`);
-
     const fileName = `WCM_All_Users_${new Date().toISOString().split('T')[0]}.xlsx`;
 
     res.setHeader(
@@ -380,26 +493,10 @@ export const exportUsersExcel = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
 
     await workbook.xlsx.write(res);
-    return res.status(200).end();
+    return res.end();
   } catch (error) {
     console.error('EXPORT ERROR:', error);
-    if (!res.headersSent) res.status(500).send('Export failed');
-  }
-};
-
-export const updateCategoryOrder = async (req, res) => {
-  try {
-    const { categories } = req.body;
-
-    const updatePromises = categories.map((cat, index) => {
-      return Category.findByIdAndUpdate(cat._id, { order: index });
-    });
-
-    await Promise.all(updatePromises);
-
-    res.status(200).json({ message: 'Order updated successfully' });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+    if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
   }
 };
 
@@ -436,7 +533,6 @@ export const exportTransactionsExcel = async (req, res) => {
     };
 
     let count = 0;
-
     for (let tx = await transactionCursor.next(); tx != null; tx = await transactionCursor.next()) {
       worksheet.addRow({
         createdAt: tx.createdAt ? tx.createdAt.toISOString().split('T')[0] : 'N/A',
@@ -449,14 +545,12 @@ export const exportTransactionsExcel = async (req, res) => {
         currency: (tx.currency || '').toUpperCase(),
         amountPaid: tx.amountPaid,
         fxRate: tx.fxRate,
-        amountInEUR: tx.amountInEUR.toFixed(2),
-        vatAmount: tx.vatAmount.toFixed(2),
+        amountInEUR: (tx.amountInEUR || 0).toFixed(2),
+        vatAmount: (tx.vatAmount || 0).toFixed(2),
         stripeSessionId: tx.stripeSessionId,
       });
       count++;
     }
-
-    console.log(`Exported ${count} transactions to Excel.`);
 
     const fileName = `Payment_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
 
@@ -467,18 +561,59 @@ export const exportTransactionsExcel = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
 
     await workbook.xlsx.write(res);
-    return res.status(200).end();
+    return res.end();
   } catch (error) {
     console.error('TRANSACTION EXPORT ERROR:', error);
-    if (!res.headersSent) res.status(500).send('Export failed');
+    if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
   }
 };
 
 export const getAllTransactions = async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const {
+      page = 1,
+      limit = 10,
+      search = '',
+      filter = 'all', // all, today, month, year
+    } = req.query;
 
     let query = { status: 'completed' };
+
+    // --- ১. ডেট ফিল্টারিং লজিক ---
+    const now = new Date();
+    if (filter === 'today') {
+      const startOfToday = new Date(now.setHours(0, 0, 0, 0));
+      query.createdAt = { $gte: startOfToday };
+    } else if (filter === 'month') {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      query.createdAt = { $gte: startOfMonth };
+    } else if (filter === 'year') {
+      const startOfYear = new Date(now.getFullYear(), 0, 1);
+      query.createdAt = { $gte: startOfYear };
+    }
+
+    // --- ২. গ্লোবাল সার্চ লজিক ---
+    if (search) {
+      // ইউজারের নাম বা ইমেইল দিয়ে সার্চ করার জন্য প্রথমে ইউজারদের খুঁজে বের করা
+      const users = await User.find({
+        $or: [
+          { firstName: { $regex: search, $options: 'i' } },
+          { lastName: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+          { username: { $regex: search, $options: 'i' } },
+        ],
+      }).select('_id');
+
+      const userIds = users.map((u) => u._id);
+
+      // ট্রানজেকশন টেবিলে সার্চ (Invoice, Package Type বা User ID দিয়ে)
+      query.$or = [
+        { invoiceNumber: { $regex: search, $options: 'i' } },
+        { packageType: { $regex: search, $options: 'i' } },
+        { stripeSessionId: { $regex: search, $options: 'i' } },
+        { creator: { $in: userIds } },
+      ];
+    }
 
     const transactions = await Transaction.find(query)
       .populate('creator', 'firstName lastName email username')
@@ -490,6 +625,7 @@ export const getAllTransactions = async (req, res) => {
 
     const count = await Transaction.countDocuments(query);
 
+    // --- ৩. ডাটা ফরম্যাটিং ---
     const formattedTransactions = transactions.map((tx) => {
       const netAmount = (tx.amountPaid || 0) - (tx.vatAmount || 0);
 
@@ -513,12 +649,20 @@ export const getAllTransactions = async (req, res) => {
       };
     });
 
+    // সামারি স্ট্যাট (ঐচ্ছিক কিন্তু অ্যাডমিনের জন্য দরকারি)
+    const totalRevenue = formattedTransactions.reduce((acc, curr) => acc + curr.amountInEUR, 0);
+
     res.status(200).json({
       success: true,
       transactions: formattedTransactions,
-      totalPages: Math.ceil(count / limit),
-      currentPage: Number(page),
-      totalCount: count,
+      pagination: {
+        totalCount: count,
+        totalPages: Math.ceil(count / limit),
+        currentPage: Number(page),
+      },
+      stats: {
+        totalEURInPage: Number(totalRevenue.toFixed(2)),
+      },
     });
   } catch (error) {
     console.error('GetAllTransactions Error:', error);
@@ -555,49 +699,64 @@ export const updatePpcBalanceManual = async (req, res) => {
 
 export const getPromotedListings = async (req, res) => {
   try {
-    const { search = '', type = 'all', page = 1, limit = 10 } = req.query;
-    const now = new Date();
+    const {
+      search = '',
+      type = 'all',
+      page = 1,
+      limit = 10,
+      timeRange = 'all', // 'today', 'week', 'month'
+    } = req.query;
 
-    // ফিল্টার কুয়েরি তৈরি
-    let query = {
-      $or: [
-        { 'promotion.boost.isActive': true, 'promotion.boost.expiresAt': { $gt: now } },
-        { 'promotion.ppc.isActive': true, 'promotion.ppc.ppcBalance': { $gt: 0 } },
-      ],
+    const now = new Date();
+    let query = {};
+
+    // ১. টাইম রেঞ্জ ফিল্টার (createdAt বা promotion শুরু হওয়ার সময় অনুযায়ী)
+    if (timeRange !== 'all') {
+      let startDate = new Date();
+      if (timeRange === 'today') startDate.setHours(0, 0, 0, 0);
+      else if (timeRange === 'week') startDate.setDate(now.getDate() - 7);
+      else if (timeRange === 'month') startDate.setMonth(now.getMonth() - 1);
+
+      query.updatedAt = { $gte: startDate }; // প্রোমোশন আপডেট হওয়ার সময়
+    }
+
+    // ২. প্রোমোশন টাইপ ফিল্টার (Boost, PPC অথবা Both)
+    const boostQuery = {
+      'promotion.boost.isActive': true,
+      'promotion.boost.expiresAt': { $gt: now },
+    };
+    const ppcQuery = {
+      'promotion.ppc.isActive': true,
+      'promotion.ppc.ppcBalance': { $gt: 0 },
     };
 
-    // সার্চ লজিক (Title বা Creator Email দিয়ে)
-    if (search) {
-      query.$and = [
-        {
-          $or: [
-            { title: { $regex: search, $options: 'i' } },
-            { 'creatorId.email': { $regex: search, $options: 'i' } },
-          ],
-        },
-      ];
-    }
-
-    // টাইপ ফিল্টার (Boost নাকি PPC)
     if (type === 'boost') {
-      query = { 'promotion.boost.isActive': true, 'promotion.boost.expiresAt': { $gt: now } };
+      query = { ...query, ...boostQuery };
     } else if (type === 'ppc') {
-      query = { 'promotion.ppc.isActive': true, 'promotion.ppc.ppcBalance': { $gt: 0 } };
+      query = { ...query, ...ppcQuery };
+    } else {
+      // 'all' এর জন্য $or ব্যবহার করে যে কোনো একটি একটিভ থাকলেই হবে
+      query.$or = [boostQuery, ppcQuery];
     }
 
+    // ৩. সার্চ লজিক (Title)
+    if (search) {
+      query.title = { $regex: search, $options: 'i' };
+    }
+
+    // ৪. ডাটা ফেচিং
     const listings = await Listing.find(query)
       .populate('creatorId', 'firstName lastName email username')
-      .sort({ 'promotion.level': -1 }) // সবচেয়ে বেশি টাকা খরচ করা লিস্টিং উপরে থাকবে
+      .sort({ 'promotion.level': -1, updatedAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .lean();
 
     const count = await Listing.countDocuments(query);
 
-    // প্রতিটি লিস্টিংয়ের জন্য লেটেস্ট ট্রানজেকশন/ইনভয়েস আইডি খুঁজে বের করা
+    // ৫. ট্রানজেকশন ডাটা সিঙ্ক (Invoice ID ও Formatting)
     const formattedData = await Promise.all(
       listings.map(async (item) => {
-        // এই লিস্টিংয়ের জন্য শেষ সফল পেমেন্টটি খুঁজে বের করা
         const lastTransaction = await Transaction.findOne({
           listing: item._id,
           status: 'completed',
@@ -605,18 +764,21 @@ export const getPromotedListings = async (req, res) => {
           .sort({ createdAt: -1 })
           .select('_id invoiceNumber');
 
+        const isBoost = item.promotion.boost.isActive && item.promotion.boost.expiresAt > now;
+        const isPpc = item.promotion.ppc.isActive && item.promotion.ppc.ppcBalance > 0;
+
         return {
           _id: item._id,
           title: item.title,
-          creatorName: `${item.creatorId?.firstName} ${item.creatorId?.lastName}`,
-          creatorEmail: item.creatorId?.email,
-          boostStatus:
-            item.promotion.boost.isActive && item.promotion.boost.expiresAt > now
-              ? `Expires: ${new Date(item.promotion.boost.expiresAt).toLocaleDateString()}`
-              : 'Inactive',
-          ppcBalance: `€${item.promotion.ppc.ppcBalance.toFixed(2)}`,
+          creatorName: `${item.creatorId?.firstName || 'Unknown'} ${item.creatorId?.lastName || ''}`,
+          creatorEmail: item.creatorId?.email || 'N/A',
+          boostStatus: isBoost
+            ? `Expires: ${new Date(item.promotion.boost.expiresAt).toLocaleDateString()}`
+            : 'Inactive',
+          ppcBalance: `€${(item.promotion.ppc.ppcBalance || 0).toFixed(2)}`,
           promotionLevel: item.promotion.level,
-          invoiceId: lastTransaction ? lastTransaction._id : null, // ইনভয়েস ডাউনলোডের জন্য আইডি
+          activeType: isBoost && isPpc ? 'Both' : isBoost ? 'Boost' : isPpc ? 'PPC' : 'None',
+          invoiceId: lastTransaction ? lastTransaction._id : null,
           invoiceNo: lastTransaction ? lastTransaction.invoiceNumber : 'N/A',
         };
       })
@@ -630,90 +792,170 @@ export const getPromotedListings = async (req, res) => {
       currentPage: Number(page),
     });
   } catch (error) {
+    console.error('Get Promoted Listings Error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
+// export const getPromotedListings = async (req, res) => {
+//   try {
+//     const { search = '', type = 'all', page = 1, limit = 10 } = req.query;
+//     const now = new Date();
+
+//     // ফিল্টার কুয়েরি তৈরি
+//     let query = {
+//       $or: [
+//         { 'promotion.boost.isActive': true, 'promotion.boost.expiresAt': { $gt: now } },
+//         { 'promotion.ppc.isActive': true, 'promotion.ppc.ppcBalance': { $gt: 0 } },
+//       ],
+//     };
+
+//     // সার্চ লজিক (Title বা Creator Email দিয়ে)
+//     if (search) {
+//       query.$and = [
+//         {
+//           $or: [
+//             { title: { $regex: search, $options: 'i' } },
+//             { 'creatorId.email': { $regex: search, $options: 'i' } },
+//           ],
+//         },
+//       ];
+//     }
+
+//     // টাইপ ফিল্টার (Boost নাকি PPC)
+//     if (type === 'boost') {
+//       query = { 'promotion.boost.isActive': true, 'promotion.boost.expiresAt': { $gt: now } };
+//     } else if (type === 'ppc') {
+//       query = { 'promotion.ppc.isActive': true, 'promotion.ppc.ppcBalance': { $gt: 0 } };
+//     }
+
+//     const listings = await Listing.find(query)
+//       .populate('creatorId', 'firstName lastName email username')
+//       .sort({ 'promotion.level': -1 }) // সবচেয়ে বেশি টাকা খরচ করা লিস্টিং উপরে থাকবে
+//       .limit(limit * 1)
+//       .skip((page - 1) * limit)
+//       .lean();
+
+//     const count = await Listing.countDocuments(query);
+
+//     // প্রতিটি লিস্টিংয়ের জন্য লেটেস্ট ট্রানজেকশন/ইনভয়েস আইডি খুঁজে বের করা
+//     const formattedData = await Promise.all(
+//       listings.map(async (item) => {
+//         // এই লিস্টিংয়ের জন্য শেষ সফল পেমেন্টটি খুঁজে বের করা
+//         const lastTransaction = await Transaction.findOne({
+//           listing: item._id,
+//           status: 'completed',
+//         })
+//           .sort({ createdAt: -1 })
+//           .select('_id invoiceNumber');
+
+//         return {
+//           _id: item._id,
+//           title: item.title,
+//           creatorName: `${item.creatorId?.firstName} ${item.creatorId?.lastName}`,
+//           creatorEmail: item.creatorId?.email,
+//           boostStatus:
+//             item.promotion.boost.isActive && item.promotion.boost.expiresAt > now
+//               ? `Expires: ${new Date(item.promotion.boost.expiresAt).toLocaleDateString()}`
+//               : 'Inactive',
+//           ppcBalance: `€${item.promotion.ppc.ppcBalance.toFixed(2)}`,
+//           promotionLevel: item.promotion.level,
+//           invoiceId: lastTransaction ? lastTransaction._id : null, // ইনভয়েস ডাউনলোডের জন্য আইডি
+//           invoiceNo: lastTransaction ? lastTransaction.invoiceNumber : 'N/A',
+//         };
+//       })
+//     );
+
+//     res.status(200).json({
+//       success: true,
+//       listings: formattedData,
+//       totalCount: count,
+//       totalPages: Math.ceil(count / limit),
+//       currentPage: Number(page),
+//     });
+//   } catch (error) {
+//     res.status(500).json({ success: false, message: error.message });
+//   }
+// };
+
 export const getAdminStats = async (req, res) => {
   try {
     const now = new Date();
+    const cacheKey = 'admin_global_stats';
+
+    // ১. টাইম রেঞ্জ (গত ৭ দিন)
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setHours(0, 0, 0, 0);
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-    const twentyFourHoursAgo = new Date();
-    twentyFourHoursAgo.setHours(now.getHours() - 24);
-
+    // ২. ডেটাবেস কল
     const [
       totalCreators,
-      totalListings,
       pendingListings,
       pendingRequests,
-      allTransactions,
       recentPaymentsCount,
-      activePpcCount,
-      activeBoostCount,
-      globalAnalytics, // Analytics মডেল থেকে ডাটা
+      allTransactions,
+      allPromotedListings,
+      globalAnalytics,
     ] = await Promise.all([
       User.countDocuments({ role: 'creator' }),
-      Listing.countDocuments(),
       Listing.countDocuments({ status: 'pending' }),
-      User.countDocuments({
-        role: 'user',
-        'creatorRequest.isApplied': true,
-        'creatorRequest.status': 'pending',
-      }),
+      User.countDocuments({ 'creatorRequest.isApplied': true, 'creatorRequest.status': 'pending' }),
+      Transaction.countDocuments({ status: 'completed', createdAt: { $gte: twentyFourHoursAgo } }),
       Transaction.find({ status: 'completed' }).lean(),
-      Transaction.countDocuments({
-        status: 'completed',
-        createdAt: { $gte: twentyFourHoursAgo },
-      }),
-      Listing.countDocuments({
-        'promotion.ppc.isActive': true,
-        'promotion.ppc.ppcBalance': { $gt: 0 },
-      }),
-      Listing.countDocuments({
-        'promotion.boost.isActive': true,
-        'promotion.boost.expiresAt': { $gt: now },
-      }),
-      // ✅ নির্ভুলতার জন্য Analytics মডেল থেকে ভিউ এবং ক্লিকের সামারি আনা
+      Listing.find({ isPromoted: true }).lean(),
       Analytics.aggregate([
-        {
-          $group: {
-            _id: null,
-            totalViews: { $sum: '$views' },
-            totalClicks: { $sum: '$clicks' },
-          },
-        },
+        { $group: { _id: null, totalViews: { $sum: '$views' }, totalClicks: { $sum: '$clicks' } } },
       ]),
     ]);
 
-    // ১. ফিন্যান্সিয়াল ক্যালকুলেশন
-    let totalRevenue = 0;
+    // ৩. ফিন্যান্সিয়াল ক্যালকুলেশন
+    let totalPaidRevenue = 0;
     let totalVat = 0;
-    let totalStripeFees = 0;
+    let netEarnedRevenue = 0; // আপনার নিশ্চিত ইনকাম (Non-refundable)
+    let activePromotions = 0;
 
+    // টোটাল রেভিনিউ এবং ভ্যাট (ট্রানজেকশন থেকে)
     allTransactions.forEach((t) => {
-      const amount = Number(t.amountPaid) || 0;
-      const vat = Number(t.vatAmount) || 0;
-      totalRevenue += amount;
-      totalVat += vat;
-      if (amount > 0) {
-        // Stripe Fee: 2.9% + 0.30 EUR (Standard)
-        totalStripeFees += amount * 0.029 + 0.3;
+      totalPaidRevenue += Number(t.amountPaid) || 0;
+      totalVat += Number(t.vatAmount) || 0;
+    });
+
+    // নিট রেভিনিউ ক্যালকুলেশন (লিস্টিং থেকে)
+    allPromotedListings.forEach((l) => {
+      // ৩.১ PPC থেকে ইনকাম (যতগুলো ক্লিক হয়ে গেছে)
+      if (l.promotion?.ppc?.executedClicks > 0) {
+        const usedPpc = l.promotion.ppc.executedClicks * (l.promotion.ppc.costPerClick || 0);
+        netEarnedRevenue += usedPpc;
+      }
+
+      // ৩.২ Boost থেকে ইনকাম (যতটুকু সময় পার হয়ে গেছে)
+      if (l.promotion?.boost?.isActive) {
+        const boostData = l.promotion.boost;
+        const createdAt = new Date(l.updatedAt); // বা যখন থেকে বুস্ট শুরু হয়েছে
+        const expiresAt = new Date(boostData.expiresAt);
+        const totalDuration = expiresAt - createdAt;
+        const elapsed = now - createdAt;
+
+        if (totalDuration > 0 && elapsed > 0) {
+          const ratio = Math.min(1, elapsed / totalDuration); // ১ এর বেশি হবে না
+          netEarnedRevenue += (boostData.amountPaid || 0) * ratio;
+        }
+
+        // একটিভ প্রোমোশন কাউন্ট (ভবিষ্যতে শেষ হবে এমন)
+        if (expiresAt > now) activePromotions++;
+      } else if (l.promotion?.ppc?.isActive && l.promotion.ppc.ppcBalance > 0) {
+        activePromotions++;
       }
     });
 
-    const netProfit = totalRevenue - totalVat - totalStripeFees;
+    const stripeFees = totalPaidRevenue * 0.029 + allTransactions.length * 0.3;
+    const netProfit = totalPaidRevenue - totalVat - stripeFees;
 
-    // ২. চার্টের জন্য গত ৭ দিনের ফিন্যান্সিয়াল ডাটা
-    const dailyFinance = await Transaction.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: sevenDaysAgo },
-          status: 'completed',
-        },
-      },
+    // ৪. চার্ট ডেটা
+    const dailyRevenueData = await Transaction.aggregate([
+      { $match: { status: 'completed', createdAt: { $gte: sevenDaysAgo } } },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
@@ -725,49 +967,46 @@ export const getAdminStats = async (req, res) => {
       { $sort: { _id: 1 } },
     ]);
 
-    // ৩. গত ৭ দিনের ভিউ/ক্লিক অ্যানালিটিক্স (গ্রাফের সাথে মিল রাখার জন্য)
-    const dailyStats = await Analytics.aggregate([
-      { $match: { date: { $gte: sevenDaysAgo } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
-          views: { $sum: '$views' },
-          clicks: { $sum: '$clicks' },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+    const revenueFlow = dailyRevenueData.map((d) => {
+      const dailyRev = d.revenue || 0;
+      const dailyFee = dailyRev * 0.029 + d.count * 0.3;
+      const dailyProfit = dailyRev - (d.vat || 0) - dailyFee;
+      return {
+        date: d._id,
+        revenue: Number(dailyRev.toFixed(2)),
+        profit: Number(Math.max(0, dailyProfit).toFixed(2)),
+      };
+    });
 
-    res.status(200).json({
-      success: true,
+    // ৫. রেসপন্স অবজেক্ট
+    const finalData = {
       cards: {
-        totalRevenue: totalRevenue.toFixed(2),
+        totalRevenue: totalPaidRevenue.toFixed(2),
+        netEarnedRevenue: netEarnedRevenue.toFixed(2), // আপনার নতুন ফিল্ড
         totalVat: totalVat.toFixed(2),
-        stripeFees: totalStripeFees.toFixed(2),
+        stripeFees: stripeFees.toFixed(2),
         netProfit: netProfit.toFixed(2),
-        // ✅ এখন এটি সরাসরি Analytics মডেলের সাথে সিঙ্কড
         totalViews: globalAnalytics[0]?.totalViews || 0,
         totalClicks: globalAnalytics[0]?.totalClicks || 0,
+        activePromotions,
         recentPayments: recentPaymentsCount,
-        activePromotions: activePpcCount + activeBoostCount,
         pendingListings,
         pendingCreatorRequests: pendingRequests,
         totalCreators,
       },
       charts: {
-        revenueFlow: dailyFinance.map((d) => ({
-          date: d._id,
-          revenue: Number(d.revenue.toFixed(2)),
-          profit: Number((d.revenue - d.vat - (d.revenue * 0.029 + d.count * 0.3)).toFixed(2)),
-        })),
-        // অতিরিক্ত ডাটা যা আপনি গ্রাফে দেখাতে পারেন
-        performanceFlow: dailyStats.map((s) => ({
-          date: s._id,
-          views: s.views,
-          clicks: s.clicks,
-        })),
+        revenueFlow,
       },
-    });
+    };
+
+    // ৬. সিস্টেম সেটিংস এ সেভ (Cache)
+    await SystemSettings.findOneAndUpdate(
+      { key: cacheKey },
+      { data: finalData, lastUpdated: now },
+      { upsert: true }
+    );
+
+    res.status(200).json({ success: true, ...finalData });
   } catch (error) {
     console.error('Admin Stats Error:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });

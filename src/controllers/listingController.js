@@ -8,30 +8,224 @@ import mongoose from 'mongoose';
 import { calculateListingLevel } from '../utils/levelCalculator.js';
 import Analytics from '../models/Analytics.js';
 import InteractionLog from '../models/InteractionLog.js';
+import { createAuditLog } from '../utils/logger.js';
+import { applyPromotionLogic, resetPPC } from '../utils/promotionHelper.js';
 
-const applyPromotionLogic = (listing) => {
-  const now = new Date();
+export const handlePpcClick = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { deviceId } = req.body;
+    const userId = req.user?._id;
 
-  // ১. স্কোর ক্যালকুলেশন
-  const boostScore =
-    listing.promotion?.boost?.isActive && listing.promotion?.boost?.expiresAt > now ? 50 : 0;
-  const ppcScore =
-    listing.promotion?.ppc?.isActive && listing.promotion?.ppc?.ppcBalance > 0 ? 30 : 0;
-  const engagementScore = (listing.favorites?.length || 0) * 2;
+    if (!deviceId) return res.status(400).json({ message: 'Security token (deviceId) missing.' });
 
-  const totalScore = boostScore + ppcScore + engagementScore;
+    const listing = await Listing.findById(id);
+    if (!listing) return res.status(404).json({ message: 'Listing not found' });
 
-  // ২. লেভেল সেট করা
-  if (totalScore >= 70) listing.promotion.level = 3;
-  else if (totalScore >= 30) listing.promotion.level = 2;
-  else if (totalScore >= 5) listing.promotion.level = 1;
-  else listing.promotion.level = 0;
+    if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
+      return res.status(200).json({ success: true, message: 'Organic click recorded.' });
+    }
 
-  // ৩. প্রমোটেড স্ট্যাটাস আপডেট
-  listing.isPromoted = boostScore > 0 || ppcScore > 0;
+    const alreadyClicked = await InteractionLog.findOne({
+      listingId: id,
+      type: 'ppc_click',
+      $or: [{ deviceId: deviceId }, ...(userId ? [{ userId: userId }] : [])],
+    });
 
-  return listing;
+    if (alreadyClicked) {
+      return res.status(200).json({ message: 'Duplicate click ignored.' });
+    }
+
+    const cost = listing.promotion.ppc.costPerClick || 0.1;
+
+    if (listing.promotion.ppc.ppcBalance >= cost) {
+      listing.promotion.ppc.ppcBalance = Number(
+        (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
+      );
+      listing.promotion.ppc.executedClicks += 1;
+
+      let isBudgetExhausted = false;
+
+      if (listing.promotion.ppc.ppcBalance < cost) {
+        resetPPC(listing);
+        isBudgetExhausted = true;
+      }
+
+      applyPromotionLogic(listing);
+      await listing.save();
+
+      await InteractionLog.create({
+        listingId: id,
+        userId: userId || null,
+        deviceId: deviceId,
+        type: 'ppc_click',
+      });
+
+      await createAuditLog({
+        req,
+        user: listing.creatorId,
+        action: 'PPC_CLICK_DEDUCTION',
+        targetType: 'Listing',
+        targetId: id,
+        details: {
+          listingTitle: listing.title,
+          costDeducted: `${cost} EUR`,
+          remainingPpcBalance: `${listing.promotion.ppc.ppcBalance} EUR`,
+          isBudgetExhausted,
+          totalExecutedClicks: listing.promotion.ppc.executedClicks,
+        },
+      });
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      await Analytics.findOneAndUpdate(
+        { listingId: id, date: today },
+        {
+          $inc: { clicks: 1 },
+          $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
+        },
+        { upsert: true }
+      );
+
+      return res.status(200).json({
+        success: true,
+        balance: listing.promotion.ppc.ppcBalance,
+        currentLevel: listing.promotion.level,
+      });
+    }
+
+    return res.status(400).json({ message: 'Insufficient PPC balance.' });
+  } catch (error) {
+    console.error('PPC Click Error:', error);
+    res.status(500).json({ message: error.message });
+  }
 };
+
+// const applyPromotionLogic = (listing) => {
+//   const now = new Date();
+
+//   // ১. স্কোর ক্যালকুলেশন
+//   const boostScore =
+//     listing.promotion?.boost?.isActive && listing.promotion?.boost?.expiresAt > now ? 50 : 0;
+//   const ppcScore =
+//     listing.promotion?.ppc?.isActive && listing.promotion?.ppc?.ppcBalance > 0 ? 30 : 0;
+//   const engagementScore = (listing.favorites?.length || 0) * 2;
+
+//   const totalScore = boostScore + ppcScore + engagementScore;
+
+//   // ২. লেভেল সেট করা
+//   if (totalScore >= 70) listing.promotion.level = 3;
+//   else if (totalScore >= 30) listing.promotion.level = 2;
+//   else if (totalScore >= 5) listing.promotion.level = 1;
+//   else listing.promotion.level = 0;
+
+//   // ৩. প্রমোটেড স্ট্যাটাস আপডেট
+//   listing.isPromoted = boostScore > 0 || ppcScore > 0;
+
+//   return listing;
+// };
+
+// export const handlePpcClick = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const { deviceId } = req.body;
+//     const userId = req.user?._id;
+
+//     if (!deviceId) return res.status(400).json({ message: 'Security token (deviceId) missing.' });
+
+//     const listing = await Listing.findById(id);
+//     if (!listing) return res.status(404).json({ message: 'Listing not found' });
+
+//     // পিপিইউ একটিভ কি না চেক
+//     if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
+//       return res.status(200).json({ success: true, message: 'Organic click recorded.' });
+//     }
+
+//     // ডুপ্লিকেট ক্লিক চেক
+//     const alreadyClicked = await InteractionLog.findOne({
+//       listingId: id,
+//       type: 'ppc_click',
+//       $or: [{ deviceId: deviceId }, ...(userId ? [{ userId: userId }] : [])],
+//     });
+
+//     if (alreadyClicked) {
+//       return res.status(200).json({ message: 'Duplicate click ignored.' });
+//     }
+
+//     const cost = listing.promotion.ppc.costPerClick || 0.1;
+
+//     // ব্যালেন্স চেক এবং আপডেট
+//     if (listing.promotion.ppc.ppcBalance >= cost) {
+//       const oldBalance = listing.promotion.ppc.ppcBalance;
+//       listing.promotion.ppc.ppcBalance = Number(
+//         (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
+//       );
+//       listing.promotion.ppc.executedClicks += 1;
+
+//       let isAutoReset = false;
+//       // ব্যালেন্স শেষ হয়ে গেলে রিসেট
+//       if (listing.promotion.ppc.ppcBalance < cost) {
+//         listing.promotion.ppc.isActive = false;
+//         listing.promotion.ppc.ppcBalance = 0;
+//         listing.promotion.ppc.amountPaid = 0;
+//         listing.promotion.ppc.totalClicks = 0;
+//         listing.promotion.ppc.executedClicks = 0;
+//         isAutoReset = true;
+//       }
+
+//       // র‍্যাঙ্কিং লেভেল আপডেট (হেল্পার ফাংশন কল)
+//       applyPromotionLogic(listing);
+//       await listing.save();
+
+//       // ১. ইন্টারেকশন লগ তৈরি (User duplication check এর জন্য)
+//       await InteractionLog.create({
+//         listingId: id,
+//         userId: userId || null,
+//         deviceId: deviceId,
+//         type: 'ppc_click',
+//       });
+
+//       await createAuditLog({
+//         req,
+//         user: listing.creatorId,
+//         action: 'PPC_CLICK_DEDUCTION',
+//         targetType: 'Listing',
+//         targetId: id,
+//         details: {
+//           listingTitle: listing.title,
+//           costDeducted: `${cost} EUR`,
+//           remainingPpcBalance: `${listing.promotion.ppc.ppcBalance} EUR`,
+//           clickerDeviceId: deviceId,
+//           isBudgetExhausted: isAutoReset,
+//           totalExecutedClicks: listing.promotion.ppc.executedClicks,
+//         },
+//       });
+
+//       // ৩. অ্যানালিটিক্স আপডেট
+//       const today = new Date();
+//       today.setHours(0, 0, 0, 0);
+//       await Analytics.findOneAndUpdate(
+//         { listingId: id, date: today },
+//         {
+//           $inc: { clicks: 1 },
+//           $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
+//         },
+//         { upsert: true }
+//       );
+
+//       return res.status(200).json({
+//         success: true,
+//         balance: listing.promotion.ppc.ppcBalance,
+//         currentLevel: listing.promotion.level,
+//       });
+//     }
+
+//     res.status(400).json({ message: 'Insufficient PPC balance.' });
+//   } catch (error) {
+//     console.error('PPC Click Error:', error);
+//     res.status(500).json({ message: error.message });
+//   }
+// };
 
 export const getCategoriesAndTags = async (req, res) => {
   try {
@@ -348,7 +542,7 @@ export const getPublicListings = async (req, res) => {
 export const getListingById = async (req, res) => {
   try {
     const { id } = req.params;
-    const { deviceId } = req.query; 
+    const { deviceId } = req.query;
     const userId = req.user?._id;
     const userAgent = req.headers['user-agent'] || 'unknown';
 
@@ -398,90 +592,6 @@ export const getListingById = async (req, res) => {
   }
 };
 
-export const handlePpcClick = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { deviceId } = req.body;
-    const userId = req.user?._id;
-
-    if (!deviceId) return res.status(400).json({ message: 'Security token (deviceId) missing.' });
-
-    const listing = await Listing.findById(id);
-    if (!listing) return res.status(404).json({ message: 'Listing not found' });
-
-    // পিপিইউ একটিভ কি না চেক
-    if (!listing.promotion?.ppc?.isActive || listing.promotion.ppc.ppcBalance <= 0) {
-      return res.status(200).json({ success: true, message: 'Organic click recorded.' });
-    }
-
-    // ডুপ্লিকেট ক্লিক চেক
-    const alreadyClicked = await InteractionLog.findOne({
-      listingId: id,
-      type: 'ppc_click',
-      $or: [{ deviceId: deviceId }, ...(userId ? [{ userId: userId }] : [])],
-    });
-
-    if (alreadyClicked) {
-      return res.status(200).json({ message: 'Duplicate click ignored.' });
-    }
-
-    const cost = listing.promotion.ppc.costPerClick || 0.1;
-
-    // ব্যালেন্স চেক এবং আপডেট
-    if (listing.promotion.ppc.ppcBalance >= cost) {
-      listing.promotion.ppc.ppcBalance = Number(
-        (listing.promotion.ppc.ppcBalance - cost).toFixed(4)
-      );
-      listing.promotion.ppc.executedClicks += 1;
-
-      // ব্যালেন্স শেষ হয়ে গেলে রিসেট
-      if (listing.promotion.ppc.ppcBalance < cost) {
-        listing.promotion.ppc.isActive = false;
-        listing.promotion.ppc.ppcBalance = 0;
-        listing.promotion.ppc.amountPaid = 0;
-        listing.promotion.ppc.totalClicks = 0;
-        listing.promotion.ppc.executedClicks = 0;
-      }
-
-      // র‍্যাঙ্কিং লেভেল আপডেট (হেল্পার ফাংশন কল)
-      applyPromotionLogic(listing);
-
-      await listing.save();
-
-      // লগ তৈরি
-      await InteractionLog.create({
-        listingId: id,
-        userId: userId || null,
-        deviceId: deviceId,
-        type: 'ppc_click',
-      });
-
-      // অ্যানালিটিক্স আপডেট
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      await Analytics.findOneAndUpdate(
-        { listingId: id, date: today },
-        {
-          $inc: { clicks: 1 },
-          $setOnInsert: { creatorId: listing.creatorId?._id || listing.creatorId },
-        },
-        { upsert: true }
-      );
-
-      return res.status(200).json({
-        success: true,
-        balance: listing.promotion.ppc.ppcBalance,
-        currentLevel: listing.promotion.level,
-      });
-    }
-
-    res.status(400).json({ message: 'Insufficient PPC balance.' });
-  } catch (error) {
-    console.error('PPC Click Error:', error);
-    res.status(500).json({ message: error.message });
-  }
-};
-
 export const getCreatorListingCount = async (req, res) => {
   try {
     const count = await Listing.countDocuments({
@@ -501,21 +611,52 @@ export const getMyListings = async (req, res) => {
     }
 
     const currentUserId = req.user._id.toString();
+    const { filter } = req.query; // query parameter থেকে ফিল্টার নিচ্ছি
 
-    const listings = await Listing.find({ creatorId: currentUserId })
+    // ১. বেসিক কুয়েরি (শুধুমাত্র নিজের লিস্টিং)
+    let query = { creatorId: currentUserId };
+
+    // ২. টাইম ফিল্টারিং লজিক
+    const now = new Date();
+    if (filter === 'today') {
+      const startOfDay = new Date(now.setHours(0, 0, 0, 0));
+      query.createdAt = { $gte: startOfDay };
+    } else if (filter === 'month') {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      query.createdAt = { $gte: startOfMonth };
+    } else if (filter === 'year') {
+      const startOfYear = new Date(now.getFullYear(), 0, 1);
+      query.createdAt = { $gte: startOfYear };
+    }
+
+    // ৩. ডাটাবেস থেকে ডাটা আনা
+    const listings = await Listing.find(query)
       .populate('category', 'title')
       .populate('culturalTags', 'title image')
       .sort({ createdAt: -1 })
       .lean();
 
+    // ৪. ডাটা ফরম্যাটিং
     const formattedListings = listings.map((item) => {
       const safeFavorites = Array.isArray(item.favorites) ? item.favorites : [];
+
+      // প্রোমোশন স্ট্যাটাস চেক (স্কিমা অনুযায়ী)
+      const isBoostActive =
+        item.promotion?.boost?.isActive && new Date(item.promotion.boost.expiresAt) > new Date();
+      const isPpcActive = item.promotion?.ppc?.isActive && (item.promotion.ppc.ppcBalance || 0) > 0;
+
       return {
         ...item,
         categoryName: item.category?.title || 'Uncategorized',
         culturalTags: (item.culturalTags || []).filter((t) => t && t._id),
         isFavorited: safeFavorites.some((favId) => favId?.toString() === currentUserId),
         favoritesCount: safeFavorites.length,
+        // ফ্রন্টএন্ডের সুবিধার জন্য প্রোমোশন স্ট্যাটাস
+        isPromoted: isBoostActive || isPpcActive,
+        activePromoTypes: {
+          boost: isBoostActive,
+          ppc: isPpcActive,
+        },
       };
     });
 

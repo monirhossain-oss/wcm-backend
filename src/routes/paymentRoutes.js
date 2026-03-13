@@ -14,10 +14,10 @@ router.post('/webhook', express.raw({ type: 'application/json' }), handleStripeW
 
 router.post('/create-checkout-session', express.json(), authMiddleware, createCheckoutSession);
 
-router.post('/purchase-promotion', authMiddleware, purchasePromotion);
+router.post('/purchase-promotion', express.json(), authMiddleware, purchasePromotion);
 
-router.post('/cancel-promotion', authMiddleware, cancelPromotion);
+router.post('/cancel-promotion', express.json(), authMiddleware, cancelPromotion);
 
-router.get('/creator/invoice/:id', authMiddleware, generateInvoice);
+router.get('/creator/invoice/:id', express.json(), authMiddleware, generateInvoice);
 
 export default router;

@@ -13,7 +13,7 @@ router.use(authorizeRoles('creator'));
 
 router.get('/stats', getCreatorDashboardStats);
 
-router.get('/payments', getMyTransactions);
+router.get('/my-transactions', getMyTransactions);
 
 router.get('/promotion-insights/:id', getPromotionAnalytics);
 

@@ -4,7 +4,12 @@ const transactionSchema = new mongoose.Schema(
   {
     creator: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     listing: { type: mongoose.Schema.Types.ObjectId, ref: 'Listing' },
-    stripeSessionId: { type: String },
+    stripeSessionId: {
+      type: String,
+      unique: true,
+      sparse: true, 
+      default: null,
+    },
     amountPaid: { type: Number, required: true },
     currency: { type: String, required: true, default: 'EUR' },
     fxRate: { type: Number, default: 1 },

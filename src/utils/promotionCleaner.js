@@ -2,19 +2,19 @@ import cron from 'node-cron';
 import Listing from '../models/Listing.js';
 
 const startPromotionCleaner = () => {
-  // প্রতি মিনিটে রান করবে
-  cron.schedule('* * * * *', async () => {
+  // প্রতিদিন রাত ১২টা (00:00) এ একবার রান করবে
+  cron.schedule('0 0 * * *', async () => {
     try {
+      console.log('Running Daily Promotion Cleaner Job...');
       const now = new Date();
 
-      // ১. মেয়াদ উত্তীর্ণ বুস্ট অফ করা
+      // ১. মেয়াদ উত্তীর্ণ বুস্ট অফ করা
       await Listing.updateMany(
         { 'promotion.boost.isActive': true, 'promotion.boost.expiresAt': { $lt: now } },
         { $set: { 'promotion.boost.isActive': false } }
       );
 
-      // ২. ব্যালেন্স শেষ অথবা CPC ব্যালেন্সের চেয়ে বেশি হলে PPC অফ করা (আপনার রিকোয়েস্ট অনুযায়ী)
-      // লজিক: isActive: true কিন্তু (balance <= 0) অথবা (balance < costPerClick)
+      // ২. ব্যালেন্স শেষ অথবা CPC ব্যালেন্সের চেয়ে বেশি হলে PPC অফ করা
       const listingsToDisablePpc = await Listing.find({
         'promotion.ppc.isActive': true,
         $or: [
@@ -30,7 +30,7 @@ const startPromotionCleaner = () => {
           {
             $set: {
               'promotion.ppc.isActive': false,
-              'promotion.ppc.ppcBalance': 0, // সেফটির জন্য জিরো করে দেওয়া
+              'promotion.ppc.ppcBalance': 0,
               'promotion.ppc.amountPaid': 0,
               'promotion.ppc.totalClicks': 0,
               'promotion.ppc.executedClicks': 0,
@@ -60,7 +60,6 @@ const startPromotionCleaner = () => {
 
           // বুস্ট স্কোর
           if (listing.promotion.boost.isActive) {
-            // ১০ ইউরো = ২০ লেভেল লজিক (১ ইউরোতে ২.৮৫ লেভেল প্রায়)
             level += (listing.promotion.boost.amountPaid / 7) * 2;
           }
 
@@ -76,7 +75,7 @@ const startPromotionCleaner = () => {
               update: {
                 $set: {
                   'promotion.level': Math.floor(level),
-                  isPromoted: true, // যদি কোনো একটি একটিভ থাকে তবে এটি true থাকবে
+                  isPromoted: true,
                 },
               },
             },
@@ -84,6 +83,8 @@ const startPromotionCleaner = () => {
         });
         await Listing.bulkWrite(bulkOps);
       }
+
+      console.log('Daily Promotion Cleaner Task Completed Successfully.');
     } catch (error) {
       console.error('Cron Cleaner Error:', error);
     }

@@ -26,9 +26,10 @@ app.use(
 
 app.use(cookieParser());
 
+app.use('/api/payments', paymentRoutes);
+
 app.use(express.json());
 
-app.use('/api/payments', paymentRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/listings', listingRoutes);
 app.use('/api/creator', creatorRoutes);
